@@ -1,0 +1,19 @@
+services:
+  ollama:
+    image: "${PAIN_LLAMACPP_VULKAN_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-vulkan}"
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      GGML_VULKAN_DEVICE: "0"
+    command: >
+      -m /root/.ollama/models/blobs/sha256-ac7023d6a4c704eb9af54ab53e476a66b7f5b6c0ef2fc4a8dde5253c291a6c38
+      --spec-draft-model /root/.ollama/models/blobs/sha256-b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef
+      --spec-type draft-dflash
+      -ngl 999
+      -c 65536
+      -b 512
+      -ub 256
+      -t 8
+      --flash-attn on
+      --host 0.0.0.0
+      --port 11434

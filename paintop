@@ -1,0 +1,523 @@
+#!/usr/bin/env python3
+"""paintop: clean, airy visual telemetry monitor for PAIN local inference & APU hardware."""
+import collections
+import curses
+import datetime as dt
+import json
+import math
+from pathlib import Path
+import sys
+import time
+import urllib.error
+import urllib.request
+
+ROOT = Path(__file__).resolve().parent
+
+HISTORY_LEN = 120
+hist_speed = collections.deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN)
+hist_draft_rate = collections.deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN)
+hist_gpu_busy = collections.deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN)
+hist_ppt_power = collections.deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN)
+
+FRAC_BLOCKS = (' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█')
+
+KNOWN_MODELS = {
+    'sha256-ac7023d6a4c704eb9af54ab53e476a66b7f5b6c0ef2fc4a8dde5253c291a6c38': 'Muse-Glimmer-30B-Q4_K_XL',
+    'sha256-b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef': 'DFlash-Muse-Glimmer-16x',
+    'sha256-11b33ad56023d8c119e7cf3ce744ea7aa5ffcc8be9ab7b5e408ec21bf584b80b': 'qwen3.8:27b-q8_0',
+}
+
+
+def read_int(path):
+    try:
+        return int(Path(path).read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def read_str(path):
+    try:
+        return Path(path).read_text().strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def get_system_mem():
+    """Read host RAM info from /proc/meminfo in GiB."""
+    mem = {'total_gib': 58.5, 'avail_gib': 20.0, 'used_gib': 38.5}
+    try:
+        data = {}
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            parts = line.split(':')
+            if len(parts) == 2:
+                key = parts[0].strip()
+                val = parts[1].strip().split()[0]
+                data[key] = int(val)
+        tot = data.get('MemTotal', 0) / (1024 * 1024)
+        avail = data.get('MemAvailable', 0) / (1024 * 1024)
+        mem['total_gib'] = round(tot, 1)
+        mem['avail_gib'] = round(avail, 1)
+        mem['used_gib'] = round(max(0.0, tot - avail), 1)
+    except Exception:
+        pass
+    return mem
+
+
+def get_hwmon():
+    stats = {
+        'ppt_w': 0.0, 'sclk_mhz': 0, 'mclk_mhz': 0, 'gpu_busy_pct': 0,
+        'gpu_temp_c': 0.0, 'cpu_temp_c': 0.0, 'gtt_used_gib': 0.0, 'gtt_total_gib': 44.0,
+        'vram_used_gib': 0.0, 'vram_total_gib': 4.0,
+    }
+    for hwmon in sorted(Path('/sys/class/hwmon').glob('hwmon*')):
+        try:
+            name = (hwmon / 'name').read_text().strip()
+        except OSError:
+            continue
+        if name == 'amdgpu':
+            ppt = read_int(hwmon / 'power1_average') or read_int(hwmon / 'power1_input')
+            sclk = read_int(hwmon / 'freq1_input')
+            temp = read_int(hwmon / 'temp1_input')
+            if ppt is not None:
+                stats['ppt_w'] = round(ppt / 1e6, 1)
+            if sclk is not None:
+                stats['sclk_mhz'] = round(sclk / 1e6)
+            if temp is not None:
+                stats['gpu_temp_c'] = round(temp / 1e3, 1)
+        elif name == 'k10temp':
+            temp = read_int(hwmon / 'temp1_input')
+            if temp is not None:
+                stats['cpu_temp_c'] = round(temp / 1e3, 1)
+
+    for card in sorted(Path('/sys/class/drm').glob('card*/device')):
+        busy = read_int(card / 'gpu_busy_percent')
+        if busy is not None:
+            stats['gpu_busy_pct'] = busy
+        gtt = read_int(card / 'mem_info_gtt_used')
+        gtt_tot = read_int(card / 'mem_info_gtt_total')
+        vram = read_int(card / 'mem_info_vram_used')
+        vram_tot = read_int(card / 'mem_info_vram_total')
+        if gtt is not None:
+            stats['gtt_used_gib'] = round(gtt / (1024 ** 3), 1)
+        if gtt_tot is not None:
+            stats['gtt_total_gib'] = round(gtt_tot / (1024 ** 3), 1)
+        if vram is not None:
+            stats['vram_used_gib'] = round(vram / (1024 ** 3), 1)
+        if vram_tot is not None:
+            stats['vram_total_gib'] = round(vram_tot / (1024 ** 3), 1)
+
+    return stats
+
+
+def fetch_server_stats(port=11434):
+    state = {'online': False, 'backend': 'vulkan', 'slots': [], 'props': {}, 'model_alias': ''}
+    backend_file = ROOT / '.state' / 'backend'
+    if backend_file.exists():
+        try:
+            state['backend'] = backend_file.read_text().strip()
+        except Exception:
+            pass
+
+    # Try llama.cpp endpoints
+    try:
+        req = urllib.request.Request(f'http://127.0.0.1:{port}/slots')
+        with urllib.request.urlopen(req, timeout=0.15) as res:
+            state['slots'] = json.load(res)
+            state['online'] = True
+            state['engine'] = 'llama.cpp'
+    except Exception:
+        pass
+
+    if state['online']:
+        try:
+            req = urllib.request.Request(f'http://127.0.0.1:{port}/props')
+            with urllib.request.urlopen(req, timeout=0.15) as res:
+                props = json.load(res)
+                state['props'] = props
+                alias = props.get('model_alias') or props.get('default_generation_settings', {}).get('model', '')
+                state['model_alias'] = KNOWN_MODELS.get(alias, alias.split('/')[-1])
+        except Exception:
+            pass
+        return state
+
+    # Fallback to Ollama
+    try:
+        req = urllib.request.Request(f'http://127.0.0.1:{port}/api/ps')
+        with urllib.request.urlopen(req, timeout=0.15) as res:
+            models = json.load(res).get('models', [])
+            state['ollama_models'] = models
+            state['online'] = True
+            state['engine'] = 'ollama'
+            if models:
+                state['model_alias'] = models[0].get('name', '')
+    except Exception:
+        pass
+
+    return state
+
+
+def safe_addstr(stdscr, y, x, text, attr=0):
+    """Safely write to curses buffer with strict clipping to prevent scrolling."""
+    h, w = stdscr.getmaxyx()
+    if y < 0 or y >= h or x < 0 or x >= w:
+        return
+    # On the very last row (h - 1), never write to column w - 1 to prevent ncurses auto-scroll
+    max_len = max(0, (w - 1 - x) if y == h - 1 else (w - x))
+    if max_len <= 0:
+        return
+    try:
+        stdscr.addstr(y, x, str(text)[:max_len], attr)
+    except curses.error:
+        pass
+
+
+def draw_amd_box(stdscr, y, x, h, w, title=""):
+    max_h, max_w = stdscr.getmaxyx()
+    if y >= max_h or x >= max_w:
+        return
+    h = min(h, max_h - y)
+    w = min(w, max_w - x)
+    if h < 2 or w < 4:
+        return
+
+    top = "╭" + "─" * (w - 2) + "╮"
+    bot = "╰" + "─" * (w - 2) + "╯"
+    safe_addstr(stdscr, y, x, top, curses.color_pair(1))
+    for i in range(1, h - 1):
+        safe_addstr(stdscr, y + i, x, "│", curses.color_pair(1))
+        safe_addstr(stdscr, y + i, x + w - 1, "│", curses.color_pair(1))
+    safe_addstr(stdscr, y + h - 1, x, bot, curses.color_pair(1))
+
+    if title:
+        safe_addstr(stdscr, y, x + 2, f" ▾ {title} ", curses.color_pair(7) | curses.A_BOLD)
+
+
+def make_smooth_bar(ratio, width):
+    """Smooth fractional block bar matching amdtop."""
+    width = max(1, width)
+    ratio = max(0.0, min(1.0, ratio))
+    scaled = ratio * width
+    full = int(scaled)
+    rem = scaled - full
+    frac_idx = int(round(rem * 8))
+    frac_char = FRAC_BLOCKS[frac_idx] if (full < width and frac_idx > 0) else ''
+    filled = '█' * full + frac_char
+    empty = ' ' * (width - len(filled))
+    return filled, empty
+
+
+def braille_char(v1, v2):
+    """Convert two 0.0..1.0 values into a 2-column braille character (4 vertical dots each)."""
+    left_dots = [0, 0x40, 0x44, 0x46, 0x47]
+    right_dots = [0, 0x80, 0xA0, 0xB0, 0xB8]
+    l = max(0, min(4, int(round(v1 * 4))))
+    r = max(0, min(4, int(round(v2 * 4))))
+    return chr(0x2800 + left_dots[l] + right_dots[r])
+
+
+def braille_wave(data, width, max_val=None):
+    """Render a live 2-column braille sparkline across specified width."""
+    if width <= 0:
+        return ""
+    vals = list(data)[-width * 2:]
+    if len(vals) < width * 2:
+        vals = [0.0] * (width * 2 - len(vals)) + vals
+    m = max_val if max_val is not None else (max(vals) if max(vals) > 0 else 1.0)
+    chars = []
+    for i in range(width):
+        v1 = max(0.0, min(1.0, vals[2 * i] / m))
+        v2 = max(0.0, min(1.0, vals[2 * i + 1] / m))
+        chars.append(braille_char(v1, v2))
+    return ''.join(chars)
+
+
+def draw_screen(stdscr):
+    curses.curs_set(0)
+    stdscr.nodelay(True)
+    stdscr.scrollok(False)
+    curses.start_color()
+    curses.use_default_colors()
+
+    # Tokyo Night Palette Color Pairs
+    curses.init_pair(1, curses.COLOR_BLUE, -1)     # Subtle borders / dim dots (#3b4261 / slate)
+    curses.init_pair(2, curses.COLOR_GREEN, -1)    # Gauges active / high speed (#73daca)
+    curses.init_pair(3, curses.COLOR_YELLOW, -1)   # Power / memory / warm load (#ff9e64 / amber)
+    curses.init_pair(4, curses.COLOR_RED, -1)      # High heat / critical limit (#f7768e)
+    curses.init_pair(5, curses.COLOR_MAGENTA, -1)  # Speculative drafter / tags (#bb9af7)
+    curses.init_pair(6, curses.COLOR_CYAN, -1)     # APU device / metrics (#7dcfff)
+    curses.init_pair(7, curses.COLOR_WHITE, -1)    # Primary text / bold headers
+
+    prev_decoded = 0
+    prev_time = time.monotonic()
+    live_speed = 0.0
+
+    while True:
+        key = stdscr.getch()
+        if key in (ord('q'), ord('Q'), 27):
+            break
+
+        now = time.monotonic()
+        dt_sec = max(0.001, now - prev_time)
+        hw = get_hwmon()
+        srv = fetch_server_stats()
+        sys_mem = get_system_mem()
+
+        # Parse inference slots & active status
+        active_slot = None
+        slots = srv.get('slots', [])
+        for s in slots:
+            if s.get('is_processing'):
+                active_slot = s
+                break
+        if not active_slot and slots:
+            active_slot = slots[0]
+
+        is_proc = active_slot.get('is_processing', False) if active_slot else False
+        is_spec = active_slot.get('speculative', False) if active_slot else False
+        n_prompt = active_slot.get('n_prompt_tokens', 0) if active_slot else 0
+        n_cache = active_slot.get('n_prompt_tokens_cache', 0) if active_slot else 0
+        next_tok = active_slot.get('next_token', [{}])[0] if (active_slot and active_slot.get('next_token')) else {}
+        n_decoded = next_tok.get('n_decoded', 0)
+        n_remain = next_tok.get('n_remain', 0)
+
+        # Detect model and backend
+        backend_name = srv.get('backend', 'vulkan')
+        model_name = srv.get('model_alias') or "Muse-Glimmer-30B-Q4_K_XL"
+        if not is_spec and 'llamacpp' in backend_name:
+            is_spec = True
+
+        # Calculate live speed
+        if is_proc and dt_sec > 0.35:
+            if n_decoded > prev_decoded:
+                live_speed = (n_decoded - prev_decoded) / dt_sec
+            prev_decoded = n_decoded
+            prev_time = now
+        elif not is_proc:
+            live_speed = 0.0
+            prev_decoded = n_decoded
+
+        # Speculative acceptance rate estimate
+        draft_rate = 0.0
+        if live_speed > 0:
+            draft_rate = min(1.0, max(0.0, (live_speed - 10.8) / (16.0 * 10.8) + 0.70)) if is_spec else 0.0
+
+        hist_speed.append(live_speed)
+        hist_draft_rate.append(draft_rate * 100.0)
+        hist_gpu_busy.append(float(hw['gpu_busy_pct']))
+        hist_ppt_power.append(float(hw['ppt_w']))
+
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+
+        if h < 18 or w < 60:
+            safe_addstr(stdscr, 0, 0, "Terminal window too small for paintop.", curses.color_pair(3))
+            stdscr.refresh()
+            time.sleep(0.4)
+            continue
+
+        is_narrow = (w < 85)
+        is_compact_w = (w < 95)
+        has_extra_height = (h >= 28)
+
+        # Header Row
+        time_utc = dt.datetime.now(dt.timezone.utc).strftime("%H:%M:%S UTC")
+        if is_narrow:
+            header_line = f"paintop  1 engine  Radeon 8060S  {time_utc}"
+        else:
+            header_line = f"paintop  1 engine  0000:c4:00.0 APU • Ryzen AI Max+ 395        {time_utc}"
+        safe_addstr(stdscr, 0, 0, header_line, curses.color_pair(7))
+
+        # Dynamic Box Heights to prevent crowding and guarantee 0 scrolling
+        avail_h = (h - 2)
+        sec1_h = min(13, int(round(avail_h * 0.58)))
+        sec2_y = 1 + sec1_h
+        sec2_h = max(7, (h - 1) - sec2_y)
+
+        # Layout Column Widths
+        left_w = 28 if is_narrow else 32
+        rx = 2 + left_w + 2
+        rw = max(10, (w - 4) - rx)
+
+        # =========================================================================
+        # SECTION 1: INFERENCE PIPELINE & MEMORY SEGMENTATION
+        # =========================================================================
+        engine_label = "LLAMA.CPP (VULKAN)" if srv.get('engine') == 'llama.cpp' else ("OLLAMA (VULKAN)" if srv.get('engine') == 'ollama' else "STANDBY")
+        draw_amd_box(stdscr, 1, 0, sec1_h, w, f"INFERENCE PIPELINE  {engine_label}")
+
+        # 1. Pipeline Flow Strip (Clean & Spacious)
+        p_hit_pct = int(round((n_cache / n_prompt * 100))) if n_prompt > 0 else 100
+        if is_compact_w:
+            p_label = f"PROMPT: {n_prompt // 1000}k" if n_prompt > 0 else "PROMPT: RDY"
+            c_label = f"KV: {p_hit_pct}%" if n_prompt > 0 else "KV: WARM"
+            d_label = "DFLASH 16x" if is_spec else "DIRECT"
+            o_label = f"TG: {live_speed:3.0f}t/s" if is_proc else "STANDBY"
+            arr1 = "►"
+            arr2 = "►"
+            arr3 = "►"
+        else:
+            p_label = f"PROMPT: {n_prompt:,} tok" if n_prompt > 0 else "PROMPT: READY"
+            c_label = f"KV CACHE: {p_hit_pct}% HIT" if n_prompt > 0 else "KV CACHE: WARM"
+            d_label = "DFLASH: 16-TOK DRAFT" if is_spec else "DRAFT: UNASSISTED"
+            o_label = f"{live_speed:4.1f} tok/s" if is_proc else "TG: STANDBY"
+            arr1 = "══►" if (is_proc and n_decoded == 0) else "──►"
+            arr2 = "══►" if is_proc else "──►"
+            arr3 = "══►" if (is_proc and live_speed > 0) else "──►"
+
+        flow_y = 2
+        flow_x = 3
+        safe_addstr(stdscr, flow_y, flow_x, f"[ {p_label} ] ", curses.color_pair(6) | curses.A_BOLD)
+        flow_x += len(p_label) + 5
+        safe_addstr(stdscr, flow_y, flow_x, f"{arr1} ", curses.color_pair(2 if is_proc else 1))
+        flow_x += len(arr1) + 1
+        safe_addstr(stdscr, flow_y, flow_x, f"[ {c_label} ] ", curses.color_pair(2 if p_hit_pct > 50 else 3) | curses.A_BOLD)
+        flow_x += len(c_label) + 5
+        safe_addstr(stdscr, flow_y, flow_x, f"{arr2} ", curses.color_pair(2 if is_proc else 1))
+        flow_x += len(arr2) + 1
+        safe_addstr(stdscr, flow_y, flow_x, f"[ {d_label} ] ", curses.color_pair(5) | curses.A_BOLD)
+        flow_x += len(d_label) + 5
+        safe_addstr(stdscr, flow_y, flow_x, f"{arr3} ", curses.color_pair(2 if is_proc else 1))
+        flow_x += len(arr3) + 1
+        safe_addstr(stdscr, flow_y, flow_x, f"[ {o_label} ]", curses.color_pair(2 if is_proc else 7) | curses.A_BOLD)
+
+        # 2. Model & Live Inference Telemetry
+        tot_tok = n_prompt + n_decoded
+        safe_addstr(stdscr, 4, 3, f"MODEL  {model_name[:left_w - 7]}", curses.color_pair(6) | curses.A_BOLD)
+        stat_badge = "● GENERATING" if is_proc else "○ IDLE"
+        stat_color = curses.color_pair(2) if is_proc else curses.color_pair(1)
+        safe_addstr(stdscr, 5, 3, f"STATE  {stat_badge}  (:11434)", stat_color | curses.A_BOLD)
+
+        bar_pad = 16 if is_narrow else 20
+        bar_w = max(6, rw - bar_pad)
+
+        # Speed Gauge
+        s_fill, s_emp = make_smooth_bar(live_speed / 40.0, bar_w)
+        spd_val_str = f"{live_speed:4.1f}t/s" if is_narrow else f"{live_speed:4.1f} tok/s"
+        safe_addstr(stdscr, 4, rx, "SPEED ", curses.color_pair(7))
+        safe_addstr(stdscr, 4, rx + 6, s_fill, curses.color_pair(2) | curses.A_BOLD)
+        safe_addstr(stdscr, 4, rx + 6 + len(s_fill), s_emp)
+        safe_addstr(stdscr, 4, rx + 6 + bar_w + 1, spd_val_str, curses.color_pair(7) | curses.A_BOLD)
+
+        # Context Gauge
+        ctx_ratio = tot_tok / 65536.0
+        c_fill, c_emp = make_smooth_bar(ctx_ratio, bar_w)
+        ctx_val_str = f"{ctx_ratio * 100:3.0f}%" if is_narrow else f"{ctx_ratio * 100:4.1f}% ({tot_tok // 1000}k)"
+        safe_addstr(stdscr, 5, rx, "CTX   ", curses.color_pair(7))
+        safe_addstr(stdscr, 5, rx + 6, c_fill, curses.color_pair(3))
+        safe_addstr(stdscr, 5, rx + 6 + len(c_fill), c_emp)
+        safe_addstr(stdscr, 5, rx + 6 + bar_w + 1, ctx_val_str, curses.color_pair(7))
+
+        # 3. Stacked Memory Segmentation Bar
+        tot_mem_gib = sys_mem['total_gib']
+        base_w_gib = 19.7 if 'muse' in model_name.lower() else (29.1 if 'qwen' in model_name.lower() else 18.0)
+        draft_w_gib = 1.6 if is_spec else 0.0
+        kv_gib = round(max(0.5, (tot_tok * 52 * 16 * 128 * 2) / (1024 ** 3)), 1) if tot_tok > 0 else 0.0
+        gtt_used = hw.get('gtt_used_gib', 0.0)
+        host_used = sys_mem['used_gib']
+        sys_apps_gib = max(2.0, round(host_used - (base_w_gib + draft_w_gib + kv_gib), 1))
+        free_gib = max(0.0, round(tot_mem_gib - (base_w_gib + draft_w_gib + kv_gib + sys_apps_gib), 1))
+
+        mem_segments = [
+            ("Base", base_w_gib, 6),
+            ("Draft", draft_w_gib, 5),
+            ("KV", kv_gib, 2),
+            ("Sys", sys_apps_gib, 3),
+        ]
+        mem_bar_w = max(10, (w - 6) - 10 - 18)
+        safe_addstr(stdscr, 7, 3, "RAM   ", curses.color_pair(7) | curses.A_BOLD)
+        cur_x = 9
+        used_cols = 0
+        for name, val, cp in mem_segments:
+            cols = int(round((val / tot_mem_gib) * mem_bar_w))
+            cols = min(cols, mem_bar_w - used_cols)
+            if cols > 0:
+                safe_addstr(stdscr, 7, cur_x, "█" * cols, curses.color_pair(cp))
+                cur_x += cols
+                used_cols += cols
+        if used_cols < mem_bar_w:
+            safe_addstr(stdscr, 7, cur_x, "·" * (mem_bar_w - used_cols), curses.color_pair(1))
+            cur_x += (mem_bar_w - used_cols)
+        used_sum = base_w_gib + draft_w_gib + kv_gib + sys_apps_gib
+        safe_addstr(stdscr, 7, cur_x + 2, f"{used_sum:.1f}G / {tot_mem_gib:.1f}G", curses.color_pair(7) | curses.A_BOLD)
+
+        # Memory Legend
+        if is_compact_w:
+            leg_str = f"      ■ Base:{base_w_gib:.1f}G  ■ Draft:{draft_w_gib:.1f}G  ■ KV:{kv_gib:.1f}G  ■ Sys:{sys_apps_gib:.1f}G  □ Free:{free_gib:.1f}G"
+        else:
+            leg_str = f"      ■ Base: {base_w_gib:.1f}G   ■ Drafter: {draft_w_gib:.1f}G   ■ KV Cache: {kv_gib:.1f}G   ■ System: {sys_apps_gib:.1f}G   □ Free: {free_gib:.1f}G"
+        safe_addstr(stdscr, 8, 3, leg_str, curses.color_pair(1))
+
+        # 4. Wide Inference Waveform (if space allows)
+        if sec1_h >= 12:
+            chart_w = max(12, w - 8)
+            safe_addstr(stdscr, 10, 3, "·" * chart_w, curses.color_pair(1))
+            wave_speed = braille_wave(hist_speed, chart_w, max_val=40.0)
+            safe_addstr(stdscr, 11, 3, wave_speed, curses.color_pair(2))
+            peak_spd = max(hist_speed) if hist_speed else 0.0
+            safe_addstr(stdscr, 12, 3, f"Inference Throughput (tok/s)", curses.color_pair(1))
+            safe_addstr(stdscr, 12, chart_w - 14, f"peak: {peak_spd:4.1f} t/s", curses.color_pair(1))
+
+        # =========================================================================
+        # SECTION 2: APU HARDWARE TELEMETRY
+        # =========================================================================
+        draw_amd_box(stdscr, sec2_y, 0, sec2_h, w, "APU HARDWARE TELEMETRY")
+
+        # Hardware Info Left Column
+        ppt_w = hw.get('ppt_w', 0.0)
+        gpu_t = hw.get('gpu_temp_c', 0.0)
+        cpu_t = hw.get('cpu_temp_c', 0.0)
+        sclk = hw.get('sclk_mhz', 0)
+        gpu_busy = hw.get('gpu_busy_pct', 0)
+
+        safe_addstr(stdscr, sec2_y + 1, 3, "Radeon 8060S (40 CU, gfx1151)", curses.color_pair(6) | curses.A_BOLD)
+        safe_addstr(stdscr, sec2_y + 2, 3, "Ryzen AI Max+ 395 (16C / 32T)", curses.color_pair(6))
+        safe_addstr(stdscr, sec2_y + 3, 3, f"{ppt_w:3.0f}W APU  •  {gpu_t:2.0f}°C  •  {sclk:4d} MHz", curses.color_pair(7))
+
+        # Hardware Gauges Right Column
+        g_fill, g_emp = make_smooth_bar(gpu_busy / 100.0, bar_w)
+        safe_addstr(stdscr, sec2_y + 1, rx, "GPU   ", curses.color_pair(7))
+        safe_addstr(stdscr, sec2_y + 1, rx + 6, g_fill, curses.color_pair(3 if gpu_busy < 80 else 4) | curses.A_BOLD)
+        safe_addstr(stdscr, sec2_y + 1, rx + 6 + len(g_fill), g_emp)
+        safe_addstr(stdscr, sec2_y + 1, rx + 6 + bar_w + 1, f"{gpu_busy:3d}%", curses.color_pair(7) | curses.A_BOLD)
+
+        pwr_ratio = min(1.0, ppt_w / 70.0)
+        p_fill, p_emp = make_smooth_bar(pwr_ratio, bar_w)
+        safe_addstr(stdscr, sec2_y + 2, rx, "PWR   ", curses.color_pair(7))
+        safe_addstr(stdscr, sec2_y + 2, rx + 6, p_fill, curses.color_pair(3))
+        safe_addstr(stdscr, sec2_y + 2, rx + 6 + len(p_fill), p_emp)
+        safe_addstr(stdscr, sec2_y + 2, rx + 6 + bar_w + 1, f"{ppt_w:4.1f}W", curses.color_pair(7))
+
+        gtt_tot = hw.get('gtt_total_gib', 44.0)
+        m_fill, m_emp = make_smooth_bar(gtt_used / gtt_tot if gtt_tot > 0 else 0.0, bar_w)
+        safe_addstr(stdscr, sec2_y + 3, rx, "GTT   ", curses.color_pair(7))
+        safe_addstr(stdscr, sec2_y + 3, rx + 6, m_fill, curses.color_pair(3))
+        safe_addstr(stdscr, sec2_y + 3, rx + 6 + len(m_fill), m_emp)
+        safe_addstr(stdscr, sec2_y + 3, rx + 6 + bar_w + 1, f"{gtt_used:.1f}G", curses.color_pair(7))
+
+        # Hardware Waveform
+        if sec2_h >= 7:
+            chart_y = sec2_y + 4
+            chart_w = max(12, w - 8)
+            safe_addstr(stdscr, chart_y, 3, "·" * chart_w, curses.color_pair(1))
+            wave_gpu = braille_wave(hist_gpu_busy, chart_w, max_val=100.0)
+            safe_addstr(stdscr, chart_y + 1, 3, wave_gpu, curses.color_pair(3))
+            peak_gpu = max(hist_gpu_busy) if hist_gpu_busy else 0
+            safe_addstr(stdscr, chart_y + 2, 3, "GPU Compute Utilization %", curses.color_pair(1))
+            safe_addstr(stdscr, chart_y + 2, chart_w - 14, f"peak: {int(peak_gpu):2d}%", curses.color_pair(1))
+
+        # Bottom Shortcut Footer
+        footer_str = " q quit   r refresh   b backend   tokyo-night   PAIN v0.2.0 "
+        safe_addstr(stdscr, h - 1, 0, footer_str.ljust(w - 1), curses.color_pair(1) | curses.A_REVERSE)
+
+        stdscr.refresh()
+        time.sleep(0.5)
+
+
+def main():
+    try:
+        curses.wrapper(draw_screen)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == '__main__':
+    main()

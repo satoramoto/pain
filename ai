@@ -16,7 +16,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / '.state' / 'backend'
 CONTAINER_STATE = ROOT / '.state' / 'container.json'
-BACKENDS = ('rocm', 'vulkan')
+BACKENDS = ('rocm', 'vulkan', 'llamacpp-vulkan')
 
 
 def config():
@@ -107,20 +107,36 @@ def up(name):
     details = container()
     CONTAINER_STATE.write_text(json.dumps(details))
     deadline = time.monotonic() + 90
-    while time.monotonic() < deadline:
-        try:
-            version = api('version', timeout=3)['version']
-        except (urllib.error.URLError, TimeoutError):
-            time.sleep(1)
-            continue
-        break
+    if name.startswith('llamacpp'):
+        port = int(config().get('PAIN_PORT', '11434'))
+        while time.monotonic() < deadline:
+            try:
+                req = urllib.request.Request(f'http://127.0.0.1:{port}/health')
+                with urllib.request.urlopen(req, timeout=3) as res:
+                    if res.status == 200:
+                        break
+            except (urllib.error.URLError, TimeoutError):
+                time.sleep(1)
+                continue
+        else:
+            raise ValueError(f'llama-server on port {port} not ready after 90 seconds. Inspect ./ai logs.')
+        print(f'PAIN ready: {name}, llama.cpp server, localhost:{port}')
     else:
-        raise ValueError('API not ready after 90 seconds. Inspect ./ai logs.')
-    for preset in presets():
-        print(f'Applying preset: {preset}', flush=True)
-        apply(preset)
-    print(f'PAIN ready: {name}, Ollama {version}, localhost:{config().get("PAIN_PORT", "11434")}')
-    print('All presets applied. Open OpenCode and select a model with /models.')
+        while time.monotonic() < deadline:
+            try:
+                version = api('version', timeout=3)['version']
+            except (urllib.error.URLError, TimeoutError):
+                time.sleep(1)
+                continue
+            break
+        else:
+            raise ValueError('API not ready after 90 seconds. Inspect ./ai logs.')
+        for preset in presets():
+            print(f'Applying preset: {preset}', flush=True)
+            apply(preset)
+        print(f'PAIN ready: {name}, Ollama {version}, localhost:{config().get("PAIN_PORT", "11434")}')
+        print('All presets applied. Open OpenCode and select a model with /models.')
+
 
 
 def presets():
@@ -277,7 +293,7 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('up', help='Start or switch backend')
     p.add_argument('backend', choices=BACKENDS)
-    for name in ('down', 'status', 'logs', 'presets'):
+    for name in ('down', 'status', 'logs', 'presets', 'top'):
         sub.add_parser(name)
     p = sub.add_parser('config', help='Render a backend Compose configuration')
     p.add_argument('backend', choices=BACKENDS)
@@ -312,6 +328,8 @@ def main():
     elif args.command == 'status':
         compose('ps')
         print(json.dumps(api('ps'), indent=2))
+    elif args.command == 'top':
+        subprocess.run([sys.executable, str(ROOT / 'paintop')])
     elif args.command == 'presets':
         for name, path in presets().items():
             print(f'{name:32} {path.relative_to(ROOT)}')

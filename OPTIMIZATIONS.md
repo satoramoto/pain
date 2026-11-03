@@ -27,8 +27,11 @@ Ordered by **estimated performance impact** (highest first). We test **one varia
 | `P7` (`E08`) | KV Cache | Test `OLLAMA_KV_CACHE_TYPE=q8_0` vs `f16` | **+5–15% long-ctx**, -50% KV RAM | — | — | `TODO` | Halves KV cache memory traffic across the 16 full-attention layers |
 | `P8` (`E04`/`E05`) | Driver Env | Vulkan `RADV_PERFTEST=nosam`; ROCm `HSA_ENABLE_SDMA=0` + `ROCBLAS_USE_HIPBLASLT=1` | **+3–10% PP / TG** | — | — | `TODO` | Tunes driver heuristics for 4 GiB VRAM + 44 GiB GTT unified memory |
 | `P9` (`E09`/`E10`) | Host / Kernel | `ttm.page_pool_size=4194304` + GPU `power_dpm_force_performance_level=high` | **Faster TTFT & load** | — | — | `TODO` | Caches WC/UC DMA pages for reloads and eliminates 600→2900 MHz SMU wake lag |
+| `M1` (`MUSE-batches`) | Muse Glimmer Batch | Sweep `num_batch` (`256`, `512`, `1024`, `2048`) on `long.txt` (`muse-glimmer-q4-experimental`) | **Portability check** | `2048`: `273.6 PP / 10.63 TG` (`21.0 GiB GTT`) | **`512`: `281.0 PP / 10.76 TG`** (`19.8 GiB GTT`)<br>`256`: `276.6 / 10.80`<br>`1024`: `276.2 / 10.65` | `KEPT` (`512`) | **`num_batch=512` ports directly from Qwen**: beats `2048` by **+2.7% PP**, **+1.2% TG**, and saves **1.2 GiB GTT** |
+| `M2` (`MUSE-threads`) | Muse Glimmer Threads | Sweep `num_thread` (`16` → `8` → `4`) on `long.txt` (`b=512, temp=1.0, 128 tok`) | **Single-CCD fit** | `16t`: `270.2 PP / 10.67 TG` (`64.5W PPT`) | **`8t`: `272.3 PP / 10.75 TG`** (`63.4W PPT`)<br>`4t`: `270.2 PP / 10.75 TG` (`62.5W PPT`) | `KEPT` (`8`) | Unlike hybrid `qwen35` (48 SSM layers), `muse-glimmer` is a pure 52-layer GQA transformer (`head_count_kv=2`, 0 SSM layers). **`8` threads wins both PP and TG** with lower PPT and faster load (`3.5s` vs `4.0s`) |
+| `M3` (`MUSE-h2h`) | Muse Glimmer vs Qwen | Head-to-head `muse-glimmer-q4-experimental` (19.65 GB) vs `qwen38-q8-tuned` (30 GB) & `UD-Q6_K` (22 GB) | **Cross-model baseline** | `Qwen Q8_0 (d=0)`: `7.68 TG`<br>`Qwen Q8_0 (d=3, think=on)`: `19.65 TG` | `Muse Q4_K_XL (d=0)`:<br>`code.txt`: `180.8 PP / 10.81 TG`<br>`reasoning.txt`: `203.2 PP / 10.75 TG` | `RECORDED` | **+40.8% faster raw `draft=0` TG** than `Q8_0` (`10.81` vs `7.68 tok/s`), **19.8 GiB GTT** (12.5 GiB less than `Q8_0`), and **3.5s load time** (vs `9.8s`). Lacks embedded MTP drafter (`d=0` vs `Q8_0`'s `d=3` at `19.65 tok/s`) |
 
-*(Status values: `TODO`, `TESTING`, `KEPT`, `REJECTED`, `PARTIAL`)*
+*(Status values: `TODO`, `TESTING`, `KEPT`, `REJECTED`, `PARTIAL`, `RECORDED`)*
 
 ---
 

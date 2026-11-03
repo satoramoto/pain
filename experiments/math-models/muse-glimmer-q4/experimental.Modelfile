@@ -4,7 +4,7 @@
 FROM hf.co/meta-models/Muse-Glimmer-30B-GGUF:Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf
 PARAMETER num_ctx 65536
 PARAMETER num_batch 512
-PARAMETER num_thread 16
+PARAMETER num_thread 8
 PARAMETER draft_num_predict 0
 PARAMETER num_predict 8192
 # Replace imported header stops: Glimmer must emit headers between channels.
