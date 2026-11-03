@@ -1,0 +1,8 @@
+services:
+  ollama:
+    image: "${PAIN_ROCM_IMAGE:-ollama/ollama:0.40.13-rocm}"
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    environment:
+      OLLAMA_VULKAN: "0"

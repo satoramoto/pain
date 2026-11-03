@@ -1,0 +1,17 @@
+# Math/Python reasoning experiment; OpenCode tool integration is unverified.
+# Source: https://huggingface.co/nvidia/Nemotron-Cascade-2-30B-A3B
+# Quant: https://huggingface.co/bartowski/nvidia_Nemotron-Cascade-2-30B-A3B-GGUF
+# 24,725,740,992 bytes of weights. No speculative decoding in this baseline.
+FROM hf.co/bartowski/nvidia_Nemotron-Cascade-2-30B-A3B-GGUF:nvidia_Nemotron-Cascade-2-30B-A3B-Q4_K_M.gguf
+PARAMETER num_ctx 65536
+PARAMETER num_batch 512
+PARAMETER num_thread 16
+PARAMETER draft_num_predict 0
+PARAMETER num_predict 8192
+# Author recommends temperature 1 / top-p .95; remaining filters are disabled.
+PARAMETER temperature 1.0
+PARAMETER top_p 0.95
+PARAMETER top_k 0
+PARAMETER min_p 0
+PARAMETER repeat_penalty 1
+PARAMETER presence_penalty 0

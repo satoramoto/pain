@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""PAIN: local inference setups, presets, and reproducible timing experiments."""
+import argparse
+import datetime as dt
+import hashlib
+import itertools
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+ROOT = Path(__file__).resolve().parent
+STATE = ROOT / '.state' / 'backend'
+CONTAINER_STATE = ROOT / '.state' / 'container.json'
+BACKENDS = ('rocm', 'vulkan')
+
+
+def config():
+    values = {}
+    path = ROOT / '.env'
+    if path.exists():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith('#'):
+                key, sep, value = line.partition('=')
+                if not sep:
+                    raise ValueError(f'Invalid .env line: {line}')
+                values[key.strip()] = value.strip().strip('"\'')
+    values.update(os.environ)
+    return values
+
+
+def backend():
+    name = STATE.read_text().strip() if STATE.exists() else 'rocm'
+    if name not in BACKENDS:
+        raise ValueError(f'Invalid saved backend: {name}')
+    return name
+
+
+def compose(*args, selected=None, capture=False):
+    selected = selected or backend()
+    env = config()
+    env['PAIN_BACKEND'] = selected
+    command = ['docker', 'compose', '--project-directory', str(ROOT),
+               '-f', str(ROOT / 'compose.yaml'),
+               '-f', str(ROOT / 'backends' / f'{selected}.yaml'), *args]
+    return subprocess.run(command, env=env, check=True, text=True,
+                          stdout=subprocess.PIPE if capture else None,
+                          stderr=subprocess.DEVNULL if capture else None)
+
+
+def api(path, data=None, timeout=1800):
+    port = int(config().get('PAIN_PORT', '11434'))
+    payload = json.dumps(data).encode() if data is not None else None
+    request = urllib.request.Request(f'http://127.0.0.1:{port}/api/{path}',
+                                     data=payload,
+                                     headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode('utf-8', 'replace')
+        try:
+            msg = json.loads(body).get('error') or body
+        except ValueError:
+            msg = body or str(exc)
+        raise ValueError(f'/api/{path}: {msg}') from exc
+    if 'error' in result:
+        raise ValueError(result['error'])
+    return result
+
+
+def container():
+    try:
+        cid = compose('ps', '-q', 'ollama', capture=True).stdout.strip()
+        if not cid:
+            raise ValueError('PAIN is not running. Start it with ./ai up rocm (or vulkan).')
+        details = json.loads(subprocess.check_output(['docker', 'inspect', cid], text=True))[0]
+    except (OSError, subprocess.CalledProcessError) as exc:
+        try:
+            api('version', timeout=3)
+        except (urllib.error.URLError, TimeoutError):
+            raise ValueError('PAIN is not running. Start it with ./ai up rocm (or vulkan).') from exc
+        if CONTAINER_STATE.exists():
+            details = json.loads(CONTAINER_STATE.read_text())
+        else:
+            details = {'Image': 'unknown', 'Config': {'Image': 'unknown', 'Env': [],
+                                                      'Labels': {'ai.pain.backend': backend()}}}
+    actual = details['Config'].get('Labels', {}).get('ai.pain.backend')
+    if actual != backend():
+        raise ValueError('Container/backend mismatch; run ./ai up with the desired backend.')
+    return details
+
+
+def up(name):
+    # Pull/validate before replacing the working service. One Compose project means
+    # switching backends replaces the same service instead of running two engines.
+    compose('config', '-q', selected=name)
+    compose('pull', 'ollama', selected=name)
+    compose('up', '-d', '--remove-orphans', 'ollama', selected=name)
+    STATE.parent.mkdir(exist_ok=True)
+    STATE.write_text(name + '\n')
+    details = container()
+    CONTAINER_STATE.write_text(json.dumps(details))
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        try:
+            version = api('version', timeout=3)['version']
+        except (urllib.error.URLError, TimeoutError):
+            time.sleep(1)
+            continue
+        break
+    else:
+        raise ValueError('API not ready after 90 seconds. Inspect ./ai logs.')
+    for preset in presets():
+        print(f'Applying preset: {preset}', flush=True)
+        apply(preset)
+    print(f'PAIN ready: {name}, Ollama {version}, localhost:{config().get("PAIN_PORT", "11434")}')
+    print('All presets applied. Open OpenCode and select a model with /models.')
+
+
+def presets():
+    return {f'{p.parent.name}-{p.stem}': p
+            for p in sorted((ROOT / 'models').glob('*/*.Modelfile'))}
+
+
+def apply(name):
+    available = presets()
+    if name not in available:
+        raise ValueError(f'Unknown preset {name}. Use ./ai presets.')
+    container()
+    # Stream the checked-in file through stdin, avoiding host-path mounts/copies.
+    compose_args = ['exec', '-T', 'ollama', 'sh', '-c',
+                    'f=$(mktemp); trap \'rm -f "$f"\' EXIT; cat > "$f"; '
+                    'ollama create "$1" -f "$f"', 'sh', name]
+    env = config()
+    env['PAIN_BACKEND'] = backend()
+    subprocess.run(['docker', 'compose', '--project-directory', str(ROOT),
+                    '-f', str(ROOT / 'compose.yaml'), '-f',
+                    str(ROOT / 'backends' / f'{backend()}.yaml'), *compose_args],
+                   input=available[name].read_text(), text=True, env=env, check=True)
+
+
+def rate(count, duration):
+    return count * 1e9 / duration if duration else None
+
+
+def host_telemetry():
+    def read_int(path):
+        try:
+            return int(Path(path).read_text().strip())
+        except (OSError, ValueError):
+            return None
+    telemetry = {}
+    for hwmon in sorted(Path('/sys/class/hwmon').glob('hwmon*')):
+        try:
+            name = (hwmon / 'name').read_text().strip()
+        except OSError:
+            continue
+        if name == 'amdgpu':
+            ppt = read_int(hwmon / 'power1_average') or read_int(hwmon / 'power1_input')
+            sclk = read_int(hwmon / 'freq1_input')
+            temp = read_int(hwmon / 'temp1_input')
+            if ppt is not None:
+                telemetry['gpu_ppt_watts'] = round(ppt / 1e6, 2)
+            if sclk is not None:
+                telemetry['gpu_sclk_mhz'] = round(sclk / 1e6, 1)
+            if temp is not None:
+                telemetry['gpu_temp_c'] = round(temp / 1e3, 1)
+        elif name == 'k10temp':
+            temp = read_int(hwmon / 'temp1_input')
+            if temp is not None:
+                telemetry['cpu_temp_c'] = round(temp / 1e3, 1)
+    for card in sorted(Path('/sys/class/drm').glob('card*/device')):
+        gtt = read_int(card / 'mem_info_gtt_used')
+        vram = read_int(card / 'mem_info_vram_used')
+        if gtt is not None:
+            telemetry['gtt_used_gib'] = round(gtt / (1024 ** 3), 2)
+        if vram is not None:
+            telemetry['vram_used_gib'] = round(vram / (1024 ** 3), 2)
+    return telemetry
+
+
+def benchmark(args):
+    details = container()
+    model = api('show', {'model': args.model})
+    prompt = args.prompt.read_text()
+    drafts = args.drafts or [None]
+    batches = args.batches or [None]
+    threads = getattr(args, 'threads', None) or [None]
+    temperature = getattr(args, 'temperature', 0)
+    destination = ROOT / 'benchmarks' / 'results' / (
+        dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ') + '.jsonl')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    def host_value(path):
+        try:
+            return Path(path).read_text().strip()
+        except OSError:
+            return None
+    metadata = {
+        'model': args.model, 'model_details': model.get('details'),
+        'model_parameters': model.get('parameters'),
+        'model_template_sha256': hashlib.sha256(model.get('template', '').encode()).hexdigest(),
+        'ollama': api('version'), 'backend': backend(),
+        'image_id': details['Image'], 'image': details['Config']['Image'],
+        'environment': [e for e in details['Config']['Env']
+                        if e.startswith(('OLLAMA_', 'GGML_', 'HSA_', 'ROCR_', 'RADV_', 'ROCBLAS_'))],
+        'prompt_path': str(args.prompt),
+        'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
+        'platform_profile': host_value('/sys/firmware/acpi/platform_profile'),
+        'note': args.note, 'think': args.think == 'on',
+    }
+    print(f'Results: {destination}\nSequential sweep; avoid other inference requests during this run.',
+          flush=True)
+    for draft, batch, thread in itertools.product(drafts, batches, threads):
+        options = {'temperature': temperature, 'seed': 42, 'num_predict': args.tokens,
+                   'num_ctx': args.context}
+        if draft is not None:
+            options['draft_num_predict'] = draft
+        if batch is not None:
+            options['num_batch'] = batch
+        if thread is not None:
+            options['num_thread'] = thread
+        for repeat in range(args.repeats):
+            # Unload before every pair to separate fresh and exact-repeat prompts.
+            api('generate', {'model': args.model, 'keep_alive': 0, 'stream': False})
+            for phase in ('fresh', 'repeat'):
+                result = api('generate', {
+                    'model': args.model, 'prompt': prompt, 'stream': False,
+                    'think': args.think == 'on', 'keep_alive': '30m', 'options': options,
+                })
+                timing = {k: v for k, v in result.items()
+                          if k.endswith(('_count', '_duration')) or k == 'done_reason'}
+                generation = rate(result.get('eval_count', 0), result.get('eval_duration', 0))
+                cached = result.get('prompt_eval_cached_count') or 0
+                uncached = (max(0, result.get('prompt_eval_count', 0) - cached)
+                            if 'prompt_eval_count' in result else None)
+                pp_speed = (rate(uncached, result.get('prompt_eval_duration', 0))
+                            if uncached is not None else None)
+                telemetry = host_telemetry()
+                record = {**metadata, 'options': options, 'repeat': repeat + 1,
+                          'phase': phase, 'timing': timing,
+                          'generation_tokens_per_second': generation,
+                          'uncached_prompt_tokens_per_second': pp_speed,
+                          'telemetry': telemetry,
+                          'response': result.get('response'), 'thinking': result.get('thinking'),
+                          'loaded_models': api('ps')}
+                with destination.open('a') as out:
+                    out.write(json.dumps(record) + '\n')
+                tg_str = f'{generation:.2f}' if generation is not None else 'n/a'
+                pp_str = f'{pp_speed:.2f}' if pp_speed is not None else 'n/a'
+                print(f'draft={draft if draft is not None else "preset"} '
+                      f'batch={batch or "preset"} thread={thread or "preset"} '
+                      f'run={repeat + 1} {phase}: pp={pp_str} tok/s tg={tg_str} tok/s', flush=True)
+
+
+def positive(value):
+    value = int(value)
+    if value <= 0:
+        raise argparse.ArgumentTypeError('must be positive')
+    return value
+
+
+def nonnegative(value):
+    value = int(value)
+    if value < 0:
+        raise argparse.ArgumentTypeError('must be zero or positive')
+    return value
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    p = sub.add_parser('up', help='Start or switch backend')
+    p.add_argument('backend', choices=BACKENDS)
+    for name in ('down', 'status', 'logs', 'presets'):
+        sub.add_parser(name)
+    p = sub.add_parser('config', help='Render a backend Compose configuration')
+    p.add_argument('backend', choices=BACKENDS)
+    p = sub.add_parser('pull', help='Download an Ollama model')
+    p.add_argument('model')
+    p = sub.add_parser('apply', help='Create a named model from a checked-in preset')
+    p.add_argument('preset', choices=list(presets()))
+    p = sub.add_parser('run', help='Chat with a model')
+    p.add_argument('model')
+    p.add_argument('--keepalive', default='30m')
+    p = sub.add_parser('bench', help='Benchmark fresh/repeated prompts; save JSONL results')
+    p.add_argument('model')
+    p.add_argument('--prompt', type=Path, default=ROOT / 'benchmarks/prompts/code.txt')
+    p.add_argument('--drafts', type=nonnegative, nargs='+')
+    p.add_argument('--batches', type=positive, nargs='+')
+    p.add_argument('--threads', type=positive, nargs='+')
+    p.add_argument('--temperature', type=float, default=0)
+    p.add_argument('--tokens', type=positive, default=256)
+    p.add_argument('--context', type=positive, default=65536)
+    p.add_argument('--repeats', type=positive, default=3)
+    p.add_argument('--think', choices=('on', 'off'), default='off')
+    p.add_argument('--note', default='', help='Record AC power, thermal conditions, etc.')
+    args = parser.parse_args()
+    if args.command == 'up':
+        up(args.backend)
+    elif args.command == 'config':
+        compose('config', selected=args.backend)
+    elif args.command == 'down':
+        compose('down')
+    elif args.command == 'logs':
+        compose('logs', '-f', '--tail', '100', 'ollama')
+    elif args.command == 'status':
+        compose('ps')
+        print(json.dumps(api('ps'), indent=2))
+    elif args.command == 'presets':
+        for name, path in presets().items():
+            print(f'{name:32} {path.relative_to(ROOT)}')
+    elif args.command == 'apply':
+        apply(args.preset)
+    elif args.command in ('pull', 'run'):
+        container()
+        extra = ['--keepalive', args.keepalive] if args.command == 'run' else []
+        compose('exec', 'ollama', 'ollama', args.command, args.model, *extra)
+    elif args.command == 'bench':
+        benchmark(args)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+        print(f'PAIN: {exc}', file=sys.stderr)
+        sys.exit(1)

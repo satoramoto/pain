@@ -1,0 +1,9 @@
+services:
+  ollama:
+    image: "${PAIN_VULKAN_IMAGE:-ollama/ollama:0.40.13}"
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      OLLAMA_VULKAN: "1"
+      # Ollama 0.40.13 excludes Vulkan integrated GPUs unless explicitly enabled.
+      OLLAMA_IGPU_ENABLE: "1"

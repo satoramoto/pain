@@ -1,0 +1,1 @@
+A queue receives 12 tasks every minute. One worker finishes a task in 20 seconds. There are three workers initially and 60 tasks already queued. After five minutes, two more workers join. Assuming work is continuous, how long after the start will the backlog first reach zero? Explain your assumptions and verify your answer.

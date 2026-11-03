@@ -1,0 +1,1 @@
+Write a Python standard-library-only implementation of an LRU cache with a fixed positive capacity, get and put methods, and a short usage example. Explain its complexity and edge cases. Do not use functools.lru_cache or collections.OrderedDict.

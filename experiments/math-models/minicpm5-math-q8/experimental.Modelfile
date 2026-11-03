@@ -1,0 +1,16 @@
+# Small community math specialist, recommended Q8 rather than Q4 conversion.
+# Source: https://huggingface.co/Caldalis/MiniCPM5-2B-Math-GGUF
+# 2,679,711,264 bytes of weights. Card benchmark results use BF16 and longer budgets.
+FROM hf.co/Caldalis/MiniCPM5-2B-Math-GGUF:MiniCPM5-2B-Math-Q8_0.gguf
+PARAMETER num_ctx 65536
+PARAMETER num_batch 512
+PARAMETER num_thread 16
+PARAMETER draft_num_predict 0
+PARAMETER num_predict 8192
+# Author sampling recommendations.
+PARAMETER temperature 0.9
+PARAMETER top_p 0.95
+PARAMETER top_k 0
+PARAMETER min_p 0
+PARAMETER repeat_penalty 1
+PARAMETER presence_penalty 0

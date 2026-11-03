@@ -1,0 +1,340 @@
+You are reviewing a standard-library Python service manager and benchmark harness for local LLM inference. Read the following architecture notes, synthetic module excerpts, and operational requirements carefully, then provide a concise list of the top 5 concurrency, reliability, and performance bugs with concrete fixes.
+
+---
+### Module 1: Connection Pool & Retry Transport (`transport.py`)
+```python
+import http.client
+import json
+import socket
+import threading
+import time
+import urllib.parse
+from collections import deque
+
+class PooledHTTPConnection:
+    def __init__(self, host: str, port: int, timeout: float = 30.0):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.conn = None
+        self.last_used = 0.0
+
+    def connect(self):
+        if self.conn is None:
+            self.conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
+            self.conn.connect()
+        self.last_used = time.monotonic()
+        return self.conn
+
+    def close(self):
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except OSError:
+                pass
+            self.conn = None
+
+
+class ConnectionPool:
+    def __init__(self, base_url: str, max_size: int = 8, idle_timeout: float = 60.0):
+        parsed = urllib.parse.urlparse(base_url)
+        self.host = parsed.hostname or "127.0.0.1"
+        self.port = parsed.port or 80
+        self.max_size = max_size
+        self.idle_timeout = idle_timeout
+        self._lock = threading.Lock()
+        self._idle = deque()
+        self._active = 0
+
+    def acquire(self, timeout: float = 30.0) -> PooledHTTPConnection:
+        now = time.monotonic()
+        with self._lock:
+            while self._idle:
+                candidate = self._idle.popleft()
+                if now - candidate.last_used <= self.idle_timeout:
+                    self._active += 1
+                    return candidate
+                candidate.close()
+            if self._active < self.max_size:
+                self._active += 1
+                return PooledHTTPConnection(self.host, self.port, timeout=timeout)
+        # Fallback: create an unpooled connection when saturated
+        return PooledHTTPConnection(self.host, self.port, timeout=timeout)
+
+    def release(self, pooled: PooledHTTPConnection, reusable: bool = True):
+        with self._lock:
+            self._active = max(0, self._active - 1)
+            if reusable and len(self._idle) < self.max_size:
+                pooled.last_used = time.monotonic()
+                self._idle.append(pooled)
+            else:
+                pooled.close()
+
+    def request_json(self, method: str, path: str, payload=None, retries: int = 3):
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if body is not None:
+            headers["Content-Length"] = str(len(body))
+        last_error = None
+        for attempt in range(retries):
+            pooled = self.acquire()
+            reusable = False
+            try:
+                conn = pooled.connect()
+                conn.request(method, path, body=body, headers=headers)
+                response = conn.getresponse()
+                raw = response.read()
+                reusable = response.will_close is False
+                if response.status >= 500:
+                    raise RuntimeError(f"Server error {response.status}: {raw.decode('utf-8', 'replace')}")
+                data = json.loads(raw.decode("utf-8")) if raw else {}
+                return data
+            except (OSError, http.client.HTTPException, RuntimeError, ValueError) as exc:
+                last_error = exc
+                pooled.close()
+                time.sleep(0.1 * (2 ** attempt))
+            finally:
+                self.release(pooled, reusable=reusable)
+        raise RuntimeError(f"Request failed after {retries} attempts: {last_error}")
+```
+
+---
+### Module 2: Sliding-Window Ring Buffer & Telemetry Collector (`telemetry.py`)
+```python
+import pathlib
+import statistics
+import threading
+import time
+
+class RingBuffer:
+    def __init__(self, capacity: int):
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        self.capacity = capacity
+        self.buffer = [None] * capacity
+        self.head = 0
+        self.size = 0
+        self.lock = threading.Lock()
+
+    def append(self, item):
+        with self.lock:
+            index = (self.head + self.size) % self.capacity
+            if self.size == self.capacity:
+                self.buffer[self.head] = item
+                self.head = (self.head + 1) % self.capacity
+            else:
+                self.buffer[index] = item
+                self.size += 1
+
+    def snapshot(self):
+        with self.lock:
+            return [self.buffer[(self.head + i) % self.capacity] for i in range(self.size)]
+
+    def clear(self):
+        with self.lock:
+            self.head = 0
+            self.size = 0
+            for i in range(self.capacity):
+                self.buffer[i] = None
+
+
+class HwmonSampler:
+    def __init__(self, interval_sec: float = 0.25, max_samples: int = 2400):
+        self.interval_sec = interval_sec
+        self.samples = RingBuffer(max_samples)
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def _read_int(self, path: pathlib.Path):
+        try:
+            return int(path.read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+    def _discover_sensors(self):
+        sensors = {}
+        base = pathlib.Path("/sys/class/hwmon")
+        if not base.exists():
+            return sensors
+        for hwmon in sorted(base.glob("hwmon*")):
+            try:
+                name = (hwmon / "name").read_text().strip()
+            except OSError:
+                continue
+            if name == "amdgpu":
+                sensors["gpu_power_uw"] = hwmon / "power1_average"
+                sensors["gpu_sclk_hz"] = hwmon / "freq1_input"
+                sensors["gpu_temp_mc"] = hwmon / "temp1_input"
+            elif name == "k10temp":
+                sensors["cpu_temp_mc"] = hwmon / "temp1_input"
+        for card in sorted(pathlib.Path("/sys/class/drm").glob("card*/device")):
+            if (card / "mem_info_gtt_used").exists():
+                sensors["gtt_bytes"] = card / "mem_info_gtt_used"
+                sensors["vram_bytes"] = card / "mem_info_vram_used"
+                sensors["gpu_busy_pct"] = card / "gpu_busy_percent"
+        return sensors
+
+    def start(self):
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self.samples.clear()
+        sensors = self._discover_sensors()
+
+        def loop():
+            while not self._stop_event.is_set():
+                started = time.monotonic()
+                row = {"ts": started}
+                for key, path in sensors.items():
+                    val = self._read_int(path)
+                    if val is not None:
+                        row[key] = val
+                self.samples.append(row)
+                elapsed = time.monotonic() - started
+                wait = max(0.0, self.interval_sec - elapsed)
+                self._stop_event.wait(wait)
+
+        self._thread = threading.Thread(target=loop, daemon=True)
+        self._thread.start()
+
+    def stop_and_summarize(self):
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        rows = self.samples.snapshot()
+        if not rows:
+            return {}
+        summary = {"sample_count": len(rows)}
+        for key, scale, unit in (
+            ("gpu_power_uw", 1e-6, "watts"),
+            ("gpu_sclk_hz", 1e-6, "mhz"),
+            ("gpu_temp_mc", 1e-3, "c"),
+            ("cpu_temp_mc", 1e-3, "c"),
+            ("gtt_bytes", 1.0 / (1024 ** 3), "gib"),
+            ("vram_bytes", 1.0 / (1024 ** 3), "gib"),
+            ("gpu_busy_pct", 1.0, "pct"),
+        ):
+            values = [r[key] * scale for r in rows if key in r]
+            if values:
+                summary[f"{key}_{unit}_mean"] = round(statistics.mean(values), 2)
+                summary[f"{key}_{unit}_max"] = round(max(values), 2)
+                summary[f"{key}_{unit}_median"] = round(statistics.median(values), 2)
+        return summary
+```
+
+---
+### Module 3: Prefix Cache & Token Batch Scheduler (`scheduler.py`)
+```python
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+import hashlib
+import time
+
+@dataclass
+class SequenceGroup:
+    request_id: str
+    prompt_tokens: List[int]
+    max_new_tokens: int
+    temperature: float = 0.0
+    draft_tokens: int = 2
+    generated_tokens: List[int] = field(default_factory=list)
+    cached_prefix_len: int = 0
+    created_at: float = field(default_factory=time.monotonic)
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+
+    @property
+    def total_len(self) -> int:
+        return len(self.prompt_tokens) + len(self.generated_tokens)
+
+    @property
+    def remaining_prompt_tokens(self) -> int:
+        return max(0, len(self.prompt_tokens) - self.cached_prefix_len)
+
+
+class RadixPrefixCache:
+    def __init__(self, block_size: int = 64, max_blocks: int = 1024):
+        self.block_size = block_size
+        self.max_blocks = max_blocks
+        self.blocks: Dict[str, Tuple[List[int], float]] = {}
+
+    def _block_hash(self, parent_hash: str, token_slice: List[int]) -> str:
+        h = hashlib.sha256()
+        h.update(parent_hash.encode("ascii"))
+        for tok in token_slice:
+            h.update(tok.to_bytes(4, "little", signed=False))
+        return h.hexdigest()
+
+    def match_prefix(self, tokens: List[int]) -> int:
+        matched = 0
+        parent = "root"
+        now = time.monotonic()
+        for offset in range(0, len(tokens) - self.block_size + 1, self.block_size):
+            chunk = tokens[offset : offset + self.block_size]
+            digest = self._block_hash(parent, chunk)
+            if digest not in self.blocks:
+                break
+            self.blocks[digest] = (chunk, now)
+            matched += self.block_size
+            parent = digest
+        # Always keep at least 1 uncached token so logits are computed
+        if matched >= len(tokens) and len(tokens) > 0:
+            matched = max(0, len(tokens) - 1)
+        return matched
+
+    def insert_prefix(self, tokens: List[int]):
+        parent = "root"
+        now = time.monotonic()
+        for offset in range(0, len(tokens) - self.block_size + 1, self.block_size):
+            if len(self.blocks) >= self.max_blocks:
+                oldest_key = min(self.blocks, key=lambda k: self.blocks[k][1])
+                del self.blocks[oldest_key]
+            chunk = tokens[offset : offset + self.block_size]
+            digest = self._block_hash(parent, chunk)
+            self.blocks[digest] = (chunk, now)
+            parent = digest
+
+
+class MicrobatchScheduler:
+    def __init__(self, logical_batch_size: int = 2048, physical_ubatch_size: int = 512):
+        if physical_ubatch_size > logical_batch_size:
+            raise ValueError("physical_ubatch_size cannot exceed logical_batch_size")
+        self.logical_batch_size = logical_batch_size
+        self.physical_ubatch_size = physical_ubatch_size
+        self.cache = RadixPrefixCache()
+        self.queue: List[SequenceGroup] = []
+
+    def submit(self, seq: SequenceGroup):
+        seq.cached_prefix_len = self.cache.match_prefix(seq.prompt_tokens)
+        self.queue.append(seq)
+
+    def plan_prefill_step(self) -> List[Tuple[str, int, int]]:
+        """Return a list of (request_id, start_idx, end_idx) microbatches up to logical_batch_size."""
+        plan = []
+        budget = self.logical_batch_size
+        for seq in self.queue:
+            if budget <= 0:
+                break
+            rem = seq.remaining_prompt_tokens
+            if rem <= 0:
+                continue
+            if seq.started_at is None:
+                seq.started_at = time.monotonic()
+            take = min(rem, budget)
+            cursor = seq.cached_prefix_len
+            while take > 0:
+                step = min(take, self.physical_ubatch_size)
+                plan.append((seq.request_id, cursor, cursor + step))
+                cursor += step
+                take -= step
+                budget -= step
+            seq.cached_prefix_len = cursor
+            if seq.remaining_prompt_tokens == 0:
+                self.cache.insert_prefix(seq.prompt_tokens)
+        return plan
+```
+
+---
+### Questions to Answer Concisely
+1. List the top 5 concurrency, resource-management, or correctness issues across `transport.py`, `telemetry.py`, and `scheduler.py`.
+2. For each issue, name the exact class/method and give a 1–2 sentence fix.
