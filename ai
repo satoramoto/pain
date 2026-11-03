@@ -97,6 +97,8 @@ def container():
 
 
 def up(name):
+    # Ensure hot/cold paths exist
+    get_paths()
     # Pull/validate before replacing the working service. One Compose project means
     # switching backends replaces the same service instead of running two engines.
     compose('config', '-q', selected=name)
@@ -120,6 +122,7 @@ def up(name):
                 continue
         else:
             raise ValueError(f'llama-server on port {port} not ready after 90 seconds. Inspect ./ai logs.')
+        sync_opencode()
         print(f'PAIN ready: {name}, llama.cpp server, localhost:{port}')
     else:
         while time.monotonic() < deadline:
@@ -134,6 +137,7 @@ def up(name):
         for preset in presets():
             print(f'Applying preset: {preset}', flush=True)
             apply(preset)
+        sync_opencode()
         print(f'PAIN ready: {name}, Ollama {version}, localhost:{config().get("PAIN_PORT", "11434")}')
         print('All presets applied. Open OpenCode and select a model with /models.')
 
@@ -144,11 +148,175 @@ def presets():
             for p in sorted((ROOT / 'models').glob('*/*.Modelfile'))}
 
 
+def get_paths():
+    cfg = config()
+    hot = Path(cfg.get('PAIN_HOT_DIR', Path.home() / '.local' / 'share' / 'pain' / 'models')).expanduser().resolve()
+    cold = Path(cfg.get('PAIN_COLD_DIR', Path.home() / '.local' / 'share' / 'pain' / 'vault')).expanduser().resolve()
+    hot.mkdir(parents=True, exist_ok=True)
+    cold.mkdir(parents=True, exist_ok=True)
+    return hot, cold
+
+
+def process_modelfile(path):
+    content = path.read_text()
+    hot_dir, cold_dir = get_paths()
+    lines = content.splitlines()
+    new_lines = []
+    needs_staging = False
+    for line in lines:
+        stripped = line.strip().upper()
+        if stripped.startswith('# STAGE:') or stripped.startswith('# STAGING:') or stripped.startswith('PARAMETER STAGING'):
+            if 'NVME' in stripped or 'HOT' in stripped:
+                needs_staging = True
+        new_lines.append(line)
+
+    if needs_staging:
+        for i, line in enumerate(new_lines):
+            if line.strip().startswith('FROM '):
+                parts = line.strip().split(None, 1)
+                if len(parts) == 2:
+                    src = parts[1].strip()
+                    if src.startswith('/models/cold/'):
+                        fname = src.replace('/models/cold/', '')
+                        cold_src = cold_dir / fname
+                        hot_dest = hot_dir / fname
+                        if not hot_dest.exists() and cold_src.exists():
+                            size_gib = cold_src.stat().st_size / (1024 ** 3)
+                            print(f'[PAIN] Auto-staging {fname} from vault to NVMe fast cache ({size_gib:.1f} GiB)...', flush=True)
+                            import shutil
+                            shutil.copy2(cold_src, hot_dest)
+                            print(f'[PAIN] Staging complete: {hot_dest}', flush=True)
+                        if hot_dest.exists():
+                            new_lines[i] = f'FROM /models/hot/{fname}'
+    return '\n'.join(new_lines) + '\n'
+
+
+def generate_models_ini():
+    hot_dir, _ = get_paths()
+    ini_path = hot_dir / 'models.ini'
+    lines = [
+        "version = 1",
+        "",
+        "[*]",
+        "ngl = 999",
+        "flash-attn = 1",
+        "mmap = 1",
+        "",
+    ]
+    for name, path in presets().items():
+        content = path.read_text()
+        model_src = None
+        ctx = 65536
+        draft_model = None
+        draft_type = None
+        batch = 512
+        ubatch = 256
+        threads = 8
+        cpu_moe = 0
+        moe_cache = 0
+
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith('FROM '):
+                src = line.split(None, 1)[1].strip()
+                if src.startswith('/models/cold/'):
+                    fname = src.replace('/models/cold/', '')
+                    model_src = f"/models/hot/{fname}"
+                else:
+                    model_src = src
+            if line.startswith('PARAMETER num_ctx'):
+                try:
+                    ctx = int(line.split()[2])
+                except Exception:
+                    pass
+            if 'STAGE: NVME' in line.upper():
+                cpu_moe = 1
+                moe_cache = 36864
+
+        if not model_src:
+            continue
+
+        if 'muse-glimmer' in name:
+            model_src = "/root/.ollama/models/blobs/sha256-ac7023d6a4c704eb9af54ab53e476a66b7f5b6c0ef2fc4a8dde5253c291a6c38"
+            draft_model = "/root/.ollama/models/blobs/sha256-b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef"
+            draft_type = "draft-dflash"
+        elif 'qwen38' in name:
+            model_src = "/root/.ollama/models/blobs/sha256-11b33ad56023d8c119e7cf3ce744ea7aa5ffcc8be9ab7b5e408ec21bf584b80b"
+
+        lines.append(f"[{name}]")
+        lines.append(f"model = {model_src}")
+        if draft_model:
+            lines.append(f"spec-draft-model = {draft_model}")
+        if draft_type:
+            lines.append(f"spec-type = {draft_type}")
+        lines.append(f"ctx-size = {ctx}")
+        lines.append(f"batch = {batch}")
+        lines.append(f"ubatch = {ubatch}")
+        lines.append(f"threads = {threads}")
+        if cpu_moe:
+            lines.append(f"cpu-moe = {cpu_moe}")
+            lines.append(f"moe-cache-mib = {moe_cache}")
+        lines.append("")
+
+    ini_path.write_text('\n'.join(lines) + '\n')
+    print(f'[PAIN] Generated router presets: {ini_path}', flush=True)
+
+
+def sync_opencode():
+    opencode_cfg = Path.home() / '.config' / 'opencode' / 'opencode.json'
+    generate_models_ini()
+    if not opencode_cfg.exists():
+        return
+    try:
+        data = json.loads(opencode_cfg.read_text())
+    except Exception as exc:
+        print(f'[PAIN] Warning: Could not parse opencode.json: {exc}', file=sys.stderr)
+        return
+
+    provider = data.setdefault('provider', {}).setdefault('pain', {})
+    models = provider.setdefault('models', {})
+
+    for name, path in presets().items():
+        content = path.read_text()
+        ctx = 65536
+        predict = 8192
+        first_comment = ""
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith('#') and not first_comment and not line.startswith('# STAGE') and not line.startswith('# STAGING'):
+                first_comment = line.lstrip('#').strip()
+            if line.startswith('PARAMETER num_ctx'):
+                try:
+                    ctx = int(line.split()[2])
+                except Exception:
+                    pass
+            if line.startswith('PARAMETER num_predict'):
+                try:
+                    predict = int(line.split()[2])
+                except Exception:
+                    pass
+
+        display_name = first_comment if first_comment else name
+        models[name] = {
+            'name': f"{name} ({display_name})" if display_name != name else name,
+            'tool_call': True,
+            'reasoning': True,
+            'limit': {
+                'context': ctx,
+                'output': predict
+            }
+        }
+
+    opencode_cfg.write_text(json.dumps(data, indent=2) + '\n')
+    print(f'[PAIN] OpenCode synced: {len(models)} models available under provider "pain"', flush=True)
+
+
 def apply(name):
     available = presets()
     if name not in available:
         raise ValueError(f'Unknown preset {name}. Use ./ai presets.')
     container()
+    modelfile_content = process_modelfile(available[name])
     # Stream the checked-in file through stdin, avoiding host-path mounts/copies.
     compose_args = ['exec', '-T', 'ollama', 'sh', '-c',
                     'f=$(mktemp); trap \'rm -f "$f"\' EXIT; cat > "$f"; '
@@ -158,7 +326,8 @@ def apply(name):
     subprocess.run(['docker', 'compose', '--project-directory', str(ROOT),
                     '-f', str(ROOT / 'compose.yaml'), '-f',
                     str(ROOT / 'backends' / f'{backend()}.yaml'), *compose_args],
-                   input=available[name].read_text(), text=True, env=env, check=True)
+                   input=modelfile_content, text=True, env=env, check=True)
+    sync_opencode()
 
 
 def rate(count, duration):
@@ -293,7 +462,7 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('up', help='Start or switch backend')
     p.add_argument('backend', choices=BACKENDS)
-    for name in ('down', 'status', 'logs', 'presets', 'top'):
+    for name in ('down', 'status', 'logs', 'presets', 'top', 'sync'):
         sub.add_parser(name)
     p = sub.add_parser('config', help='Render a backend Compose configuration')
     p.add_argument('backend', choices=BACKENDS)
@@ -330,6 +499,8 @@ def main():
         print(json.dumps(api('ps'), indent=2))
     elif args.command == 'top':
         subprocess.run([sys.executable, str(ROOT / 'paintop')])
+    elif args.command == 'sync':
+        sync_opencode()
     elif args.command == 'presets':
         for name, path in presets().items():
             print(f'{name:32} {path.relative_to(ROOT)}')

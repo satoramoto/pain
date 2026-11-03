@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import math
 from pathlib import Path
+import subprocess
 import sys
 import time
 import urllib.error
@@ -138,6 +139,18 @@ def fetch_server_stats(port=11434):
                 state['model_alias'] = KNOWN_MODELS.get(alias, alias.split('/')[-1])
         except Exception:
             pass
+
+        try:
+            req = urllib.request.Request(f'http://127.0.0.1:{port}/models')
+            with urllib.request.urlopen(req, timeout=0.15) as res:
+                models_data = json.load(res).get('data', [])
+                for m in models_data:
+                    if m.get('status') == 'loaded' or m.get('loaded'):
+                        mid = m.get('id', '')
+                        state['model_alias'] = KNOWN_MODELS.get(mid, mid.split('/')[-1])
+                        break
+        except Exception:
+            pass
         return state
 
     # Fallback to Ollama
@@ -250,11 +263,34 @@ def draw_screen(stdscr):
     prev_decoded = 0
     prev_time = time.monotonic()
     live_speed = 0.0
+    status_msg = ""
+    status_time = 0.0
 
     while True:
         key = stdscr.getch()
         if key in (ord('q'), ord('Q'), 27):
-            break
+            # Smoothly hide scratchpad in Hyprland
+            try:
+                res = subprocess.run(['hyprctl', 'dispatch', 'togglespecialworkspace', 'pain'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if res.returncode != 0:
+                    break
+            except Exception:
+                break
+        elif key in (ord('u'), ord('U')):
+            b = srv.get('backend', 'llamacpp-vulkan')
+            subprocess.Popen([str(ROOT / 'ai'), 'up', b], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            status_msg = f"Starting {b} engine..."
+            status_time = time.monotonic()
+        elif key in (ord('d'), ord('D')):
+            subprocess.Popen([str(ROOT / 'ai'), 'down'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            status_msg = "Stopping engine..."
+            status_time = time.monotonic()
+        elif key in (ord('b'), ord('B')):
+            cur_b = srv.get('backend', 'llamacpp-vulkan')
+            new_b = 'vulkan' if cur_b == 'llamacpp-vulkan' else 'llamacpp-vulkan'
+            subprocess.Popen([str(ROOT / 'ai'), 'up', new_b], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            status_msg = f"Switching to {new_b}..."
+            status_time = time.monotonic()
 
         now = time.monotonic()
         dt_sec = max(0.001, now - prev_time)
@@ -504,9 +540,13 @@ def draw_screen(stdscr):
             safe_addstr(stdscr, chart_y + 2, 3, "GPU Compute Utilization %", curses.color_pair(1))
             safe_addstr(stdscr, chart_y + 2, chart_w - 14, f"peak: {int(peak_gpu):2d}%", curses.color_pair(1))
 
-        # Bottom Shortcut Footer
-        footer_str = " q quit   r refresh   b backend   tokyo-night   PAIN v0.2.0 "
-        safe_addstr(stdscr, h - 1, 0, footer_str.ljust(w - 1), curses.color_pair(1) | curses.A_REVERSE)
+        # Bottom Shortcut Footer (with live action banner)
+        if status_msg and (now - status_time < 3.5):
+            footer_str = f" [!] {status_msg} "
+            safe_addstr(stdscr, h - 1, 0, footer_str.ljust(w - 1), curses.color_pair(3) | curses.A_REVERSE | curses.A_BOLD)
+        else:
+            footer_str = " [u] Start  [d] Stop  [b] Backend  [q] Hide  •  PAIN v0.2.0 "
+            safe_addstr(stdscr, h - 1, 0, footer_str.ljust(w - 1), curses.color_pair(1) | curses.A_REVERSE)
 
         stdscr.refresh()
         time.sleep(0.5)
