@@ -5,3 +5,4 @@ __pycache__/
 benchmarks/results/*
 !benchmarks/results/.gitkeep
 experiments/lab_runs.jsonl
+.build/

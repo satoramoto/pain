@@ -420,7 +420,7 @@ def draw_screen(stdscr):
             status_time = time.monotonic()
         elif key in (ord('b'), ord('B')):
             cur_b = srv.get('backend', 'llamacpp-vulkan')
-            backends_order = ['llamacpp-vulkan', 'llamacpp-cpu', 'vulkan', 'rocm']
+            backends_order = ['llamacpp-vulkan', 'llamacpp-cpu', 'llamacpp-metal', 'vulkan', 'rocm']
             idx = backends_order.index(cur_b) if cur_b in backends_order else 0
             new_b = backends_order[(idx + 1) % len(backends_order)]
             subprocess.Popen([str(ROOT / 'ai'), 'up', new_b], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -515,7 +515,7 @@ def draw_screen(stdscr):
         # SECTION 1: INFERENCE PIPELINE & MEMORY SEGMENTATION
         # =========================================================================
         if srv.get('engine') == 'llama.cpp':
-            engine_label = "LLAMA.CPP (CPU)" if 'cpu' in backend_name else "LLAMA.CPP (VULKAN)"
+            engine_label = "LLAMA.CPP (CPU)" if 'cpu' in backend_name else "LLAMA.CPP (METAL / VIRTGPU)" if "metal" in backend_name else "LLAMA.CPP (VULKAN)"
         elif srv.get('engine') == 'ollama':
             engine_label = "OLLAMA (VULKAN)"
         else:

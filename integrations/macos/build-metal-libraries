@@ -1,0 +1,27 @@
+#!/bin/sh
+# Developer build only. End-user machines receive the built virtualization libraries.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64) ;;
+  *) echo 'Build these libraries on an Apple Silicon Mac.' >&2; exit 1 ;;
+esac
+for tool in git cmake; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "Developer prerequisite missing: $tool" >&2; exit 1; }
+done
+revision=$(cat "$root/containers/virtgpu/llama-revision")
+work="$root/.build/metal-$revision"
+mkdir -p "$work"
+if [ ! -d "$work/src" ]; then
+  git init "$work/src"
+  git -C "$work/src" remote add origin https://github.com/ggml-org/llama.cpp.git
+  git -C "$work/src" fetch --depth 1 origin "$revision"
+  git -C "$work/src" checkout --detach FETCH_HEAD
+fi
+test "$(git -C "$work/src" rev-parse HEAD)" = "$revision" || { echo 'Source revision mismatch.' >&2; exit 1; }
+cmake -S "$work/src" -B "$work/build" -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_NATIVE=OFF -DGGML_VIRTGPU=ON -DGGML_VIRTGPU_BACKEND=ONLY \
+  -DGGML_METAL=ON -DGGML_BACKEND_DL=ON -DLLAMA_BUILD_TESTS=OFF
+cmake --build "$work/build" --parallel 4 --target ggml-metal ggml-virtgpu-backend
+printf 'Metal libraries: %s\n' "$work/build/bin"
+printf '%s\n' "$revision" > "$work/build/bin/pain-llama-revision"

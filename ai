@@ -19,7 +19,8 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / '.state' / 'backend'
 CONTAINER_STATE = ROOT / '.state' / 'container.json'
-BACKENDS = ('rocm', 'vulkan', 'llamacpp-vulkan', 'llamacpp-cpu')
+RUNTIME_STATE = ROOT / '.state' / 'runtime'
+BACKENDS = ('rocm', 'vulkan', 'llamacpp-vulkan', 'llamacpp-cpu', 'llamacpp-metal')
 
 
 def config():
@@ -44,14 +45,26 @@ def backend():
     return name
 
 
+def runtime():
+    name = config().get('PAIN_RUNTIME', 'docker')
+    if name not in ('docker', 'podman'):
+        raise ValueError('PAIN_RUNTIME must be docker or podman.')
+    return name
+
+
 def compose(*args, selected=None, capture=False):
     selected = selected or backend()
+    if args and args[0] not in ('config', 'build', 'pull') and RUNTIME_STATE.exists():
+        previous = RUNTIME_STATE.read_text().strip()
+        if previous != runtime():
+            raise ValueError(f'PAIN belongs to {previous}. Run PAIN_RUNTIME={previous} ./ai down before switching runtimes.')
     env = config()
     env['PAIN_BACKEND'] = selected
-    command = ['docker', 'compose', '--project-directory', str(ROOT),
+    env['PAIN_MODELS_DIR'] = str(models_dir())
+    command = [runtime(), 'compose',
                '-f', str(ROOT / 'compose.yaml'),
                '-f', str(ROOT / 'backends' / f'{selected}.yaml'), *args]
-    return subprocess.run(command, env=env, check=True, text=True,
+    return subprocess.run(command, cwd=ROOT, env=env, check=True, text=True,
                           stdout=subprocess.PIPE if capture else None,
                           stderr=subprocess.DEVNULL if capture else None)
 
@@ -79,10 +92,10 @@ def api(path, data=None, timeout=1800):
 
 def container():
     try:
-        cid = compose('ps', '-q', 'engine', capture=True).stdout.strip()
+        cid = compose('ps', '-q', capture=True).stdout.strip()
         if not cid:
             raise ValueError('PAIN is not running. Start it with ./ai up <backend>.')
-        details = json.loads(subprocess.check_output(['docker', 'inspect', cid], text=True))[0]
+        details = json.loads(subprocess.check_output([runtime(), 'inspect', cid], text=True))[0]
     except (OSError, subprocess.CalledProcessError) as exc:
         try:
             port = int(config().get('PAIN_PORT', '11434'))
@@ -108,8 +121,15 @@ def up(name):
     models_dir()
     # Pull/validate before replacing the working service. One Compose project means
     # switching backends replaces the same service instead of running two engines.
-    compose('config', '-q', selected=name)
-    compose('pull', 'engine', selected=name)
+    compose('config', selected=name, capture=True)
+    if name == 'llamacpp-metal':
+        if runtime() != 'podman':
+            raise ValueError('llamacpp-metal requires Podman with an APIR-enabled libkrun VM. See docs/macos.md.')
+        compose('build', 'engine', selected=name)
+        # Probe the actual remoted device before replacing a working engine.
+        compose('run', '-T', '--rm', '--no-deps', 'engine', '--pain-probe', selected=name)
+    else:
+        compose('pull', 'engine', selected=name)
     if name.startswith('llamacpp'):
         # llama-server reads models.ini once at startup, so the presets must be
         # current before the container is (re)created, not after it is healthy.
@@ -117,6 +137,7 @@ def up(name):
     compose('up', '-d', '--force-recreate', '--remove-orphans', 'engine', selected=name)
     STATE.parent.mkdir(exist_ok=True)
     STATE.write_text(name + '\n')
+    RUNTIME_STATE.write_text(runtime() + '\n')
     details = container()
     CONTAINER_STATE.write_text(json.dumps(details))
     deadline = time.monotonic() + 90
@@ -310,10 +331,11 @@ def apply(name):
                     'ollama create "$1" -f "$f"', 'sh', name]
     env = config()
     env['PAIN_BACKEND'] = backend()
-    subprocess.run(['docker', 'compose', '--project-directory', str(ROOT),
+    env['PAIN_MODELS_DIR'] = str(models_dir())
+    subprocess.run([runtime(), 'compose',
                     '-f', str(ROOT / 'compose.yaml'), '-f',
                     str(ROOT / 'backends' / f'{backend()}.yaml'), *compose_args],
-                   input=modelfile_content, text=True, env=env, check=True)
+                   input=modelfile_content, text=True, env=env, cwd=ROOT, check=True)
     dedupe_ollama_import(name, modelfile_content)
     sync_opencode()
 
@@ -548,7 +570,7 @@ def pull_ollama(tag, name=None, force=False):
     script = ('ollama serve >/tmp/ollama-serve.log 2>&1 & '
               'for i in $(seq 1 60); do ollama list >/dev/null 2>&1 && break; sleep 0.5; done; '
               'ollama pull "$1"')
-    subprocess.run(['docker', 'run', '--rm',
+    subprocess.run([runtime(), 'run', '--rm',
                     '-v', f'{models_dir()}:/models',
                     '-e', 'OLLAMA_MODELS=/models/ollama',
                     '--entrypoint', 'sh', image, '-c', script, 'sh', tag], check=True)
@@ -570,7 +592,7 @@ def pull_ollama(tag, name=None, force=False):
         return destination
     # The Ollama store is root-owned; link from inside a throwaway container.
     try:
-        subprocess.run(['docker', 'run', '--rm',
+        subprocess.run([runtime(), 'run', '--rm',
                         '-v', f'{models_dir()}:/models',
                         '--entrypoint', 'sh', image, '-c', 'ln -f "$1" "$2"', 'sh',
                         f'/models/ollama/blobs/sha256-{digest}',
@@ -731,7 +753,7 @@ def nonnegative(value):
 def lab_image_id():
     try:
         return subprocess.check_output(
-            ['docker', 'inspect', '-f', '{{.Id}}', 'pain-lab'], text=True).strip()
+            [runtime(), 'inspect', '-f', '{{.Id}}', 'pain-lab'], text=True).strip()
     except subprocess.CalledProcessError as exc:
         raise ValueError('Lab image not built. Run ./ai lab build first.') from exc
 
@@ -760,7 +782,7 @@ def lab_run_args(args, shell=False):
     experiments.mkdir(parents=True, exist_ok=True)
     threads = getattr(args, 'threads', None) or cfg.get('PAIN_LAB_THREADS', '8')
     seed = getattr(args, 'seed', None) or cfg.get('PAIN_LAB_SEED', '0')
-    argv = ['docker', 'run', '--rm',
+    argv = [runtime(), 'run', '--rm',
             '-v', f'{code}:/workspace/code',
             '-v', f'{experiments}:/workspace/experiments',
             '-v', 'pain-lab-data:/data',
@@ -797,13 +819,13 @@ def lab_run_args(args, shell=False):
 
 def lab(args):
     if args.lab_command == 'build':
-        subprocess.run(['docker', 'build', '-t', 'pain-lab',
+        subprocess.run([runtime(), 'build', '-t', 'pain-lab',
                         '-f', str(ROOT / 'lab' / 'Dockerfile'), str(ROOT / 'lab')], check=True)
         print(f'PAIN lab image ready: {lab_image_id()}')
         return
     if args.lab_command == 'ps':
         result = subprocess.run(
-            ['docker', 'ps', '--filter', 'ancestor=pain-lab',
+            [runtime(), 'ps', '--filter', 'ancestor=pain-lab',
              '--format', '{{.ID}}\t{{.RunningFor}}\t{{.Command}}'],
             capture_output=True, text=True, check=True)
         if not result.stdout.strip():
@@ -887,11 +909,18 @@ def main():
         compose('config', selected=args.backend)
     elif args.command == 'down':
         compose('down')
+        RUNTIME_STATE.unlink(missing_ok=True)
+        CONTAINER_STATE.unlink(missing_ok=True)
     elif args.command == 'logs':
         compose('logs', '-f', '--tail', '100', 'engine')
     elif args.command == 'status':
         compose('ps')
-        print(json.dumps(api('ps'), indent=2))
+        if backend().startswith('llamacpp'):
+            port = config().get('PAIN_PORT', '11434')
+            with urllib.request.urlopen(f'http://127.0.0.1:{port}/models', timeout=10) as response:
+                print(json.dumps(json.load(response), indent=2))
+        else:
+            print(json.dumps(api('ps'), indent=2))
     elif args.command == 'top':
         subprocess.run([sys.executable, str(ROOT / 'paintop')])
     elif args.command == 'sync':

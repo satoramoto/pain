@@ -41,7 +41,7 @@ function contextFraction(inf) {
 
 function engineLabel(status) {
   var backend = String(status.backend || "")
-  if (status.engine === "llama.cpp") return "llama.cpp" + (backend.indexOf("cpu") >= 0 ? " · CPU" : " · Vulkan")
+  if (status.engine === "llama.cpp") return "llama.cpp" + (backend.indexOf("cpu") >= 0 ? " · CPU" : backend.indexOf("metal") >= 0 ? " · Metal (VirtGPU)" : " · Vulkan")
   if (status.engine === "ollama") return "Ollama · " + (backend || "vulkan")
   return backend || "—"
 }

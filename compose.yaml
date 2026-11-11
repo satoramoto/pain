@@ -7,6 +7,6 @@ services:
     ports:
       - "127.0.0.1:${PAIN_PORT:-11434}:11434"
     volumes:
-      - "${PAIN_MODELS_DIR:-/home/ryan/Models}:/models"
+      - "${PAIN_MODELS_DIR:?Set PAIN_MODELS_DIR or use ./ai}:/models"
     labels:
       ai.pain.backend: "${PAIN_BACKEND}"

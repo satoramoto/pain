@@ -6,8 +6,8 @@ Built initially for a 64 GB ASUS ROG Flow Z13 with a Ryzen AI Max+ 395 / Radeon
 
 ## Quick start
 
-Requirements: Python 3.10+, Docker Engine, Docker Compose, and a working host
-AMD GPU driver. Python uses only its standard library. ROCm needs `/dev/kfd`
+Linux requirements: Python 3.10+, Docker or Podman with a Compose provider,
+and a working host AMD GPU driver for the GPU backends. Python uses only its standard library. ROCm needs `/dev/kfd`
 and `/dev/dri`; Vulkan needs `/dev/dri`.
 
 ```sh
@@ -30,7 +30,7 @@ when running with sudo, since sudo may strip shell environment variables.
 
 ### Model storage
 
-All weights live under `PAIN_MODELS_DIR` (default `/home/ryan/Models`), mounted at
+All weights live under `PAIN_MODELS_DIR` (default `~/Models`), mounted at
 `/models` in the container. The Ollama backends keep their blob store in
 `$PAIN_MODELS_DIR/ollama`, so PAIN uses no custom Docker volumes. Presets
 reference GGUFs directly by path.
@@ -62,6 +62,22 @@ Partial downloads resume from `<name>.gguf.part`. `--sha256` verifies the
 finished file, `--force` replaces an existing one, and `HF_TOKEN` is used for
 gated Hugging Face repos. Ollama tags are pulled into `PAIN_MODELS_DIR/ollama`
 and hardlinked to `PAIN_MODELS_DIR/<tag>.gguf`; nothing is duplicated.
+
+## Container runtime and experimental Mac support
+
+Set `PAIN_RUNTIME=docker` (default) or `PAIN_RUNTIME=podman` in `.env`.
+All inference, model-import/download containers and lab commands use that runtime.
+Podman needs a Compose provider (`podman-compose` or another configured provider).
+Stop PAIN with the old runtime before switching; recorded runtime ownership
+prevents accidentally managing a different engine. Rootless Podman failures do
+not trigger sudo/pkexec into a different container store.
+
+Apple Silicon testing uses `llamacpp-metal`: a Linux ARM64 server with VirtGPU
+forwarding to the real host Metal backend. It requires an APIR-enabled libkrun
+virtualization stack; stock Podman GPU support alone is insufficient. The Mac
+launcher runs Python in a controller container. See [Mac setup and acceptance
+checks](docs/macos.md) before running `./integrations/macos/ai up llamacpp-metal`.
+This is not yet a validated Mac release or a Tauri bundle.
 
 ## Daily commands
 

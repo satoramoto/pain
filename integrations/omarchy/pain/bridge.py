@@ -94,8 +94,11 @@ def action(command, backend=None, escalate='sudo'):
         if command == 'up':
             args.append(backend)
         if command != 'top':
-            probe = subprocess.run(['docker', 'info'], stdout=subprocess.DEVNULL,
+            runtime = ai['runtime']()
+            probe = subprocess.run([runtime, 'info'], stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, timeout=10)
+            if probe.returncode and runtime == 'podman':
+                raise ValueError('Podman is unavailable. Start its machine/service; PAIN will not switch to rootful Podman.')
             if probe.returncode:
                 args.insert(0, escalate)
         return subprocess.run(args, cwd=ROOT).returncode

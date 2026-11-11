@@ -1,0 +1,14 @@
+# Experimental: Linux server -> VirtGPU/APIR -> host ggml-metal, not MoltenVK.
+services:
+  engine:
+    image: localhost/pain-llamacpp-metal:dev
+    platform: linux/arm64
+    build:
+      context: ./containers/virtgpu
+    devices:
+      - /dev/dri:/dev/dri
+    security_opt:
+      - label=disable
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/health"]
+    command: ["--models-preset", "/models/models.ini", "--models-max", "1", "--models-autoload", "-ngl", "999", "--host", "0.0.0.0", "--port", "11434"]

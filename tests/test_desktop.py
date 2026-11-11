@@ -54,7 +54,7 @@ class DesktopTests(unittest.TestCase):
         self.assertFalse(result['inference']['has_slot'])
 
     def test_invalid_backend_never_runs_command(self):
-        with patch.object(desktop.runpy, 'run_path', return_value={'BACKENDS': ('rocm',)}), \
+        with patch.object(desktop.runpy, 'run_path', return_value={'BACKENDS': ('rocm',), 'runtime': lambda: 'docker'}), \
                 patch.object(desktop.subprocess, 'run') as run:
             with self.assertRaises(ValueError):
                 desktop.action('up', 'invalid')
@@ -63,7 +63,7 @@ class DesktopTests(unittest.TestCase):
     def test_start_preserves_arguments_and_uses_sudo_when_needed(self):
         with tempfile.TemporaryDirectory(prefix='pain checkout ') as directory, \
                 patch.object(desktop, 'ROOT', Path(directory)), \
-                patch.object(desktop.runpy, 'run_path', return_value={'BACKENDS': ('rocm',)}), \
+                patch.object(desktop.runpy, 'run_path', return_value={'BACKENDS': ('rocm',), 'runtime': lambda: 'docker'}), \
                 patch.object(desktop.subprocess, 'run') as run:
             run.return_value.returncode = 1
             desktop.action('up', 'rocm')
@@ -72,7 +72,7 @@ class DesktopTests(unittest.TestCase):
     def test_background_start_escalates_with_pkexec(self):
         with tempfile.TemporaryDirectory(prefix='pain checkout ') as directory, \
                 patch.object(desktop, 'ROOT', Path(directory)), \
-                patch.object(desktop.runpy, 'run_path', return_value={'BACKENDS': ('rocm',)}), \
+                patch.object(desktop.runpy, 'run_path', return_value={'BACKENDS': ('rocm',), 'runtime': lambda: 'docker'}), \
                 patch.object(desktop.subprocess, 'run') as run:
             run.return_value.returncode = 1
             desktop.action('up', 'rocm', escalate='pkexec')
@@ -96,3 +96,14 @@ class DesktopTests(unittest.TestCase):
             self.assertEqual(desktop.main(), 1)
             self.assertTrue(notify.call_args.kwargs['urgent'])
             self.assertIn('already in progress', notify.call_args.args[1])
+
+    def test_podman_failure_does_not_escalate_to_a_different_store(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(desktop, 'ROOT', Path(directory)), \
+                patch.object(desktop.runpy, 'run_path', return_value={'BACKENDS': ('rocm',), 'runtime': lambda: 'podman'}), \
+                patch.object(desktop.subprocess, 'run') as run:
+            run.return_value.returncode = 1
+            with self.assertRaisesRegex(ValueError, 'will not switch to rootful'):
+                desktop.action('up', 'rocm')
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0], ['podman', 'info'])

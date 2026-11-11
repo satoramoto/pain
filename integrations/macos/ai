@@ -1,0 +1,29 @@
+#!/bin/sh
+# No host Python: run PAIN's controller beside the engine in the Podman VM.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64) ;;
+  *) echo 'This launcher requires an Apple Silicon Mac.' >&2; exit 1 ;;
+esac
+command -v podman >/dev/null 2>&1 || { echo 'Install Podman with libkrun first; see docs/macos.md.' >&2; exit 1; }
+# Select the dedicated machine connection, never alter the user's global default.
+connection=${PAIN_PODMAN_CONNECTION:-pain-metal}
+models=${PAIN_MODELS_DIR:-$HOME/Models}
+case "$models" in /*) ;; *) echo 'PAIN_MODELS_DIR must be an absolute Mac path.' >&2; exit 1 ;; esac
+mkdir -p "$models"
+socket=$(podman --connection "$connection" info --format '{{.Host.RemoteSocket.Path}}')
+case "$socket" in /*) ;; *) echo 'Could not resolve the Podman VM socket.' >&2; exit 1 ;; esac
+image=localhost/pain-controller:dev
+if ! podman --connection "$connection" image exists "$image"; then
+  podman --connection "$connection" build -t "$image" "$root/containers/controller"
+fi
+# Same absolute paths on Mac, VM and controller make sibling bind mounts valid.
+# Host networking here means the Linux VM, where Compose publishes the engine.
+exec podman --connection "$connection" run --rm -i --network host \
+  --security-opt label=disable \
+  -v "$socket:/run/podman/podman.sock" \
+  -v "$root:$root" -v "$models:$models" -w "$root" \
+  -e CONTAINER_HOST=unix:///run/podman/podman.sock \
+  -e PAIN_RUNTIME=podman -e "PAIN_MODELS_DIR=$models" \
+  "$image" "$root/ai" "$@"

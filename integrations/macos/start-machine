@@ -1,0 +1,25 @@
+#!/bin/sh
+# Use an already prepared APIR virtualization stack; install nothing globally.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64) ;;
+  *) echo 'Requires an Apple Silicon Mac.' >&2; exit 1 ;;
+esac
+: "${PAIN_METAL_LIB_DIR:?Set PAIN_METAL_LIB_DIR to the matching llama.cpp build/bin directory}"
+: "${PAIN_VIRGL_LIB_DIR:?Set PAIN_VIRGL_LIB_DIR to the APIR-enabled virglrenderer build/src directory}"
+for library in libggml-metal.dylib libggml-virtgpu-backend.dylib; do
+  test -f "$PAIN_METAL_LIB_DIR/$library" || { echo "Missing $PAIN_METAL_LIB_DIR/$library" >&2; exit 1; }
+done
+test -f "$PAIN_VIRGL_LIB_DIR/libvirglrenderer.1.dylib" || { echo 'Missing APIR virglrenderer library.' >&2; exit 1; }
+test "$(cat "$PAIN_METAL_LIB_DIR/pain-llama-revision")" = "$(cat "$root/containers/virtgpu/llama-revision")" || {
+  echo 'Host/container llama.cpp revision mismatch; rebuild the Metal libraries.' >&2; exit 1;
+}
+export DYLD_LIBRARY_PATH="$PAIN_VIRGL_LIB_DIR"
+export VIRGL_APIR_BACKEND_LIBRARY="$PAIN_METAL_LIB_DIR/libggml-virtgpu-backend.dylib"
+export APIR_LLAMA_CPP_GGML_LIBRARY_PATH="$PAIN_METAL_LIB_DIR/libggml-metal.dylib"
+export APIR_LLAMA_CPP_GGML_LIBRARY_REG=ggml_backend_metal_reg
+# This dedicated VM uses the documented legacy Venus capset routing workaround.
+export VIRGL_ROUTE_VENUS_TO_APIR=1
+export CONTAINERS_MACHINE_PROVIDER=libkrun
+exec podman machine start pain-metal
