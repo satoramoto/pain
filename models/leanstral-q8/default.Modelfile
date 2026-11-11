@@ -1,0 +1,11 @@
+# Leanstral 119B MoE for Lean 4 theorem proving (Q8_0, 6.5B active parameters)
+# Source: jackcloudman/Leanstral-2603-GGUF / mistralai/Leanstral-1.5-119B-A6B
+FROM /models/mistralai_Leanstral-128x3.9B-2603-Q8_0.gguf
+
+PARAMETER num_gpu 0
+PARAMETER num_ctx 32768
+PARAMETER num_predict 8192
+PARAMETER num_batch 512
+PARAMETER num_thread 8
+PARAMETER temperature 0.0
+PARAMETER stop "<|eot|>"

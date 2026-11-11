@@ -1,9 +1,11 @@
 services:
-  ollama:
+  engine:
     image: "${PAIN_LLAMACPP_VULKAN_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-vulkan}"
     devices:
       - /dev/dri:/dev/dri
     environment:
       GGML_VULKAN_DEVICE: "0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/health"]
     command: >
-      ${PAIN_LLAMACPP_CMD:---models-preset /models/hot/models.ini --models-max 1 --models-autoload --host 0.0.0.0 --port 11434}
+      ${PAIN_LLAMACPP_CMD:---models-preset /models/models.ini --models-max 1 --models-autoload -ngl 999 --flash-attn on -b 512 -ub 256 -t 8 --cpu-moe --host 0.0.0.0 --port 11434}

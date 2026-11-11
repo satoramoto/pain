@@ -1,8 +1,12 @@
 # Official higher-quality dynamic Q4 build, text-only experiment.
 # Source: https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF
-# 19,653,960,832 bytes of weights; projector and DFlash drafter not included.
-FROM hf.co/meta-models/Muse-Glimmer-30B-GGUF:Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf
-PARAMETER num_ctx 65536
+# 19,653,960,832 bytes of weights; projector not included.
+# llama.cpp also loads dflash-Muse-Glimmer-30B-Q4_K_M.gguf as the DFlash drafter.
+FROM /models/Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf
+# Full trained window (muse-glimmer.context_length). Only 13 of 52 layers attend
+# over the whole context (2 KV heads, 128-dim); the rest use a 2048-token sliding
+# window, so f16 KV costs ~13 KiB/token: ~1.6 GiB at 128k vs ~0.8 GiB at 64k.
+PARAMETER num_ctx 131072
 PARAMETER num_batch 512
 PARAMETER num_thread 8
 PARAMETER draft_num_predict 0

@@ -1,5 +1,5 @@
 # Current leader on Vulkan: batch 512 and three-token native MTP drafts.
-FROM qwen3.8:27b-q8_0
+FROM /models/Qwen3.8-27B-Q8_0.gguf
 PARAMETER num_ctx 65536
 PARAMETER num_batch 512
 PARAMETER num_thread 16

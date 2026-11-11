@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent
@@ -25,8 +26,45 @@ FRAC_BLOCKS = (' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█')
 KNOWN_MODELS = {
     'sha256-ac7023d6a4c704eb9af54ab53e476a66b7f5b6c0ef2fc4a8dde5253c291a6c38': 'Muse-Glimmer-30B-Q4_K_XL',
     'sha256-b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef': 'DFlash-Muse-Glimmer-16x',
+    'sha256-2bb22714289826d7b9e0ba376c3ce47d08bce39abe598745857c44d88c09bdbf': 'qwen3.8:27b-q8_0',
     'sha256-11b33ad56023d8c119e7cf3ce744ea7aa5ffcc8be9ab7b5e408ec21bf584b80b': 'qwen3.8:27b-q8_0',
+    'leanstral-q8-default': 'Leanstral-128x3.9B-Q8_0',
+    'muse-glimmer-q4-experimental': 'Muse-Glimmer-30B-Q4_K_XL',
+    'qwen38-q8-tuned': 'qwen3.8:27b-q8_0',
 }
+
+# Approximate resident weight size per model family (GiB), matched by substring.
+MODEL_WEIGHTS_GIB = (('leanstral', 126.5), ('nemotron', 32.6), ('qwen', 29.1), ('muse', 18.3))  # muse: 19,653,960,832 B on disk
+DRAFT_WEIGHTS_GIB = 1.5  # DFlash-Muse-Glimmer draft blob: 1.52 GiB
+DEFAULT_WEIGHTS_GIB = 18.0
+
+
+def split_memory(host_used_gib, gtt_used_gib, gtt_total_gib, tot_mem_gib, base_w_gib, draft_w_gib):
+    """Split host RAM into GPU-resident (GTT) and host-only parts, in GiB.
+
+    On this APU the GTT is not separate memory: it is a ceiling on how much
+    system RAM the iGPU may pin, and those pages are already inside host_used.
+    Weights and draft are capped by the measured GTT usage, the remaining GTT
+    is KV cache + compute buffers, and everything outside GTT is Sys.
+    """
+    gtt = max(0.0, min(gtt_used_gib, host_used_gib))
+    base = min(max(0.0, base_w_gib), gtt)
+    draft = min(max(0.0, draft_w_gib), max(0.0, gtt - base))
+    kv = max(0.0, gtt - base - draft)
+    sys_apps = max(0.0, host_used_gib - gtt)
+    free = max(0.0, tot_mem_gib - host_used_gib)
+    gtt_ratio = (gtt_used_gib / gtt_total_gib) if gtt_total_gib > 0 else 0.0
+    return {
+        'base': round(base, 1),
+        'draft': round(draft, 1),
+        'kv': round(kv, 1),
+        'sys': round(sys_apps, 1),
+        'free': round(free, 1),
+        'gtt': round(gtt, 1),
+        'gtt_total': round(gtt_total_gib, 1),
+        'gtt_ratio': max(0.0, min(1.0, gtt_ratio)),
+        'gtt_share_pct': int(round(100.0 * gtt_total_gib / tot_mem_gib)) if tot_mem_gib > 0 else 0,
+    }
 
 
 def read_int(path):
@@ -41,6 +79,9 @@ def read_str(path):
         return Path(path).read_text().strip()
     except (OSError, ValueError):
         return ""
+
+
+prev_vmstat = {'pswpin': 0, 'pswpout': 0, 'time': 0.0}
 
 
 def get_system_mem():
@@ -62,6 +103,84 @@ def get_system_mem():
     except Exception:
         pass
     return mem
+
+
+def get_swap_info():
+    """Read host swap & pagefile statistics from /proc/swaps in GiB."""
+    info = {
+        'total_gib': 0.0,
+        'used_gib': 0.0,
+        'free_gib': 0.0,
+        'zram_total_gib': 0.0,
+        'zram_used_gib': 0.0,
+        'nvme_total_gib': 0.0,
+        'nvme_used_gib': 0.0,
+        'nvme_prio': None,
+        'zram_prio': None,
+        'devices': []
+    }
+    try:
+        lines = Path('/proc/swaps').read_text().splitlines()
+        for line in lines[1:]:
+            parts = line.split()
+            if len(parts) >= 5:
+                fname = parts[0]
+                size_gib = round(int(parts[2]) / (1024 * 1024), 1)
+                used_gib = round(int(parts[3]) / (1024 * 1024), 1)
+                prio = int(parts[4])
+                is_zram = 'zram' in fname
+                if is_zram:
+                    info['zram_total_gib'] += size_gib
+                    info['zram_used_gib'] += used_gib
+                    info['zram_prio'] = prio
+                else:
+                    info['nvme_total_gib'] += size_gib
+                    info['nvme_used_gib'] += used_gib
+                    info['nvme_prio'] = prio
+                info['total_gib'] += size_gib
+                info['used_gib'] += used_gib
+                info['devices'].append({
+                    'name': 'zRAM' if is_zram else 'NVMe',
+                    'file': fname,
+                    'size_gib': size_gib,
+                    'used_gib': used_gib,
+                    'prio': prio
+                })
+        info['free_gib'] = max(0.0, round(info['total_gib'] - info['used_gib'], 1))
+        info['total_gib'] = round(info['total_gib'], 1)
+        info['used_gib'] = round(info['used_gib'], 1)
+        info['zram_total_gib'] = round(info['zram_total_gib'], 1)
+        info['zram_used_gib'] = round(info['zram_used_gib'], 1)
+        info['nvme_total_gib'] = round(info['nvme_total_gib'], 1)
+        info['nvme_used_gib'] = round(info['nvme_used_gib'], 1)
+    except Exception:
+        pass
+    return info
+
+
+def get_swap_io():
+    """Read live paging rates (MB/s) from /proc/vmstat."""
+    global prev_vmstat
+    io = {'in_mb_s': 0.0, 'out_mb_s': 0.0, 'total_mb_s': 0.0}
+    now = time.monotonic()
+    try:
+        cur = {'pswpin': 0, 'pswpout': 0}
+        for line in Path('/proc/vmstat').read_text().splitlines():
+            if line.startswith('pswpin '):
+                cur['pswpin'] = int(line.split()[1])
+            elif line.startswith('pswpout '):
+                cur['pswpout'] = int(line.split()[1])
+        if prev_vmstat['time'] > 0:
+            dt = max(0.1, now - prev_vmstat['time'])
+            din = cur['pswpin'] - prev_vmstat['pswpin']
+            dout = cur['pswpout'] - prev_vmstat['pswpout']
+            io['in_mb_s'] = round((din * 4096) / (1024 * 1024 * dt), 1)
+            io['out_mb_s'] = round((dout * 4096) / (1024 * 1024 * dt), 1)
+            io['total_mb_s'] = round(io['in_mb_s'] + io['out_mb_s'], 1)
+        prev_vmstat = {'pswpin': cur['pswpin'], 'pswpout': cur['pswpout'], 'time': now}
+    except Exception:
+        pass
+    return io
 
 
 def get_hwmon():
@@ -119,36 +238,46 @@ def fetch_server_stats(port=11434):
         except Exception:
             pass
 
-    # Try llama.cpp endpoints
+    def get_json(path, timeout=0.25):
+        req = urllib.request.Request(f'http://127.0.0.1:{port}{path}')
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return json.load(res)
+
+    # llama.cpp. A router (--models-preset) lists its presets on /models and
+    # answers /slots and /props only with ?model=<loaded id>; a single-model
+    # server answers them bare. Probe /models first to tell the two apart.
+    loaded_id = ''
     try:
-        req = urllib.request.Request(f'http://127.0.0.1:{port}/slots')
-        with urllib.request.urlopen(req, timeout=0.15) as res:
-            state['slots'] = json.load(res)
-            state['online'] = True
-            state['engine'] = 'llama.cpp'
+        models_data = get_json('/models').get('data', [])
+        state['online'] = True
+        state['engine'] = 'llama.cpp'
+        state['models'] = []
+        for m in models_data:
+            status = m.get('status')
+            value = status.get('value') if isinstance(status, dict) else status
+            mid = m.get('id', '')
+            state['models'].append({'id': mid, 'loaded': value == 'loaded' or bool(m.get('loaded'))})
+            if (value == 'loaded' or m.get('loaded')) and not loaded_id:
+                loaded_id = mid
+    except Exception:
+        pass
+
+    query = f'?model={urllib.parse.quote(loaded_id)}' if loaded_id else ''
+    try:
+        state['slots'] = get_json('/slots' + query)
+        state['online'] = True
+        state['engine'] = 'llama.cpp'
     except Exception:
         pass
 
     if state['online']:
+        state['model_id'] = loaded_id
         try:
-            req = urllib.request.Request(f'http://127.0.0.1:{port}/props')
-            with urllib.request.urlopen(req, timeout=0.15) as res:
-                props = json.load(res)
-                state['props'] = props
-                alias = props.get('model_alias') or props.get('default_generation_settings', {}).get('model', '')
+            props = get_json('/props' + query)
+            state['props'] = props
+            alias = loaded_id or props.get('model_alias') or props.get('default_generation_settings', {}).get('model', '')
+            if alias and alias != 'llama-server':
                 state['model_alias'] = KNOWN_MODELS.get(alias, alias.split('/')[-1])
-        except Exception:
-            pass
-
-        try:
-            req = urllib.request.Request(f'http://127.0.0.1:{port}/models')
-            with urllib.request.urlopen(req, timeout=0.15) as res:
-                models_data = json.load(res).get('data', [])
-                for m in models_data:
-                    if m.get('status') == 'loaded' or m.get('loaded'):
-                        mid = m.get('id', '')
-                        state['model_alias'] = KNOWN_MODELS.get(mid, mid.split('/')[-1])
-                        break
         except Exception:
             pass
         return state
@@ -245,7 +374,10 @@ def braille_wave(data, width, max_val=None):
 
 
 def draw_screen(stdscr):
-    curses.curs_set(0)
+    try:
+        curses.curs_set(0)
+    except Exception:
+        pass
     stdscr.nodelay(True)
     stdscr.scrollok(False)
     curses.start_color()
@@ -265,13 +397,14 @@ def draw_screen(stdscr):
     live_speed = 0.0
     status_msg = ""
     status_time = 0.0
+    srv = {'backend': 'llamacpp-vulkan', 'online': False, 'slots': [], 'props': {}, 'model_alias': ''}
 
     while True:
         key = stdscr.getch()
         if key in (ord('q'), ord('Q'), 27):
             # Smoothly hide scratchpad in Hyprland
             try:
-                res = subprocess.run(['hyprctl', 'dispatch', 'togglespecialworkspace', 'pain'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                res = subprocess.run(['hyprctl', 'dispatch', 'hl.dsp.workspace.toggle_special("pain")'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if res.returncode != 0:
                     break
             except Exception:
@@ -287,7 +420,9 @@ def draw_screen(stdscr):
             status_time = time.monotonic()
         elif key in (ord('b'), ord('B')):
             cur_b = srv.get('backend', 'llamacpp-vulkan')
-            new_b = 'vulkan' if cur_b == 'llamacpp-vulkan' else 'llamacpp-vulkan'
+            backends_order = ['llamacpp-vulkan', 'llamacpp-cpu', 'vulkan', 'rocm']
+            idx = backends_order.index(cur_b) if cur_b in backends_order else 0
+            new_b = backends_order[(idx + 1) % len(backends_order)]
             subprocess.Popen([str(ROOT / 'ai'), 'up', new_b], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             status_msg = f"Switching to {new_b}..."
             status_time = time.monotonic()
@@ -297,6 +432,8 @@ def draw_screen(stdscr):
         hw = get_hwmon()
         srv = fetch_server_stats()
         sys_mem = get_system_mem()
+        swap_info = get_swap_info()
+        swap_io = get_swap_io()
 
         # Parse inference slots & active status
         active_slot = None
@@ -318,7 +455,7 @@ def draw_screen(stdscr):
 
         # Detect model and backend
         backend_name = srv.get('backend', 'vulkan')
-        model_name = srv.get('model_alias') or "Muse-Glimmer-30B-Q4_K_XL"
+        model_name = srv.get('model_alias') or ("no model loaded" if srv.get('online') else "offline")
         if not is_spec and 'llamacpp' in backend_name:
             is_spec = True
 
@@ -365,7 +502,7 @@ def draw_screen(stdscr):
 
         # Dynamic Box Heights to prevent crowding and guarantee 0 scrolling
         avail_h = (h - 2)
-        sec1_h = min(13, int(round(avail_h * 0.58)))
+        sec1_h = min(14, max(9, int(round(avail_h * 0.58))))
         sec2_y = 1 + sec1_h
         sec2_h = max(7, (h - 1) - sec2_y)
 
@@ -377,7 +514,12 @@ def draw_screen(stdscr):
         # =========================================================================
         # SECTION 1: INFERENCE PIPELINE & MEMORY SEGMENTATION
         # =========================================================================
-        engine_label = "LLAMA.CPP (VULKAN)" if srv.get('engine') == 'llama.cpp' else ("OLLAMA (VULKAN)" if srv.get('engine') == 'ollama' else "STANDBY")
+        if srv.get('engine') == 'llama.cpp':
+            engine_label = "LLAMA.CPP (CPU)" if 'cpu' in backend_name else "LLAMA.CPP (VULKAN)"
+        elif srv.get('engine') == 'ollama':
+            engine_label = "OLLAMA (VULKAN)"
+        else:
+            engine_label = "STANDBY"
         draw_amd_box(stdscr, 1, 0, sec1_h, w, f"INFERENCE PIPELINE  {engine_label}")
 
         # 1. Pipeline Flow Strip (Clean & Spacious)
@@ -433,32 +575,35 @@ def draw_screen(stdscr):
         safe_addstr(stdscr, 4, rx + 6 + len(s_fill), s_emp)
         safe_addstr(stdscr, 4, rx + 6 + bar_w + 1, spd_val_str, curses.color_pair(7) | curses.A_BOLD)
 
-        # Context Gauge
-        ctx_ratio = tot_tok / 65536.0
+        # Context Gauge (window reported by the live slot; 64k only as a fallback)
+        n_ctx = active_slot.get('n_ctx', 0) if active_slot else 0
+        n_ctx = n_ctx if isinstance(n_ctx, int) and n_ctx > 0 else 65536
+        ctx_ratio = tot_tok / float(n_ctx)
         c_fill, c_emp = make_smooth_bar(ctx_ratio, bar_w)
-        ctx_val_str = f"{ctx_ratio * 100:3.0f}%" if is_narrow else f"{ctx_ratio * 100:4.1f}% ({tot_tok // 1000}k)"
+        ctx_val_str = f"{ctx_ratio * 100:3.0f}%" if is_narrow else f"{ctx_ratio * 100:3.0f}% {tot_tok // 1024}k/{n_ctx // 1024}k"
         safe_addstr(stdscr, 5, rx, "CTX   ", curses.color_pair(7))
         safe_addstr(stdscr, 5, rx + 6, c_fill, curses.color_pair(3))
         safe_addstr(stdscr, 5, rx + 6 + len(c_fill), c_emp)
         safe_addstr(stdscr, 5, rx + 6 + bar_w + 1, ctx_val_str, curses.color_pair(7))
 
-        # 3. Stacked Memory Segmentation Bar
+        # 3. Stacked Memory & Pagefile Segmentation Bars
+        # The GPU segments are the measured GTT usage (weights + draft + KV/compute);
+        # GTT pages are system RAM, so they sit inside the same bar as Sys.
         tot_mem_gib = sys_mem['total_gib']
-        base_w_gib = 19.7 if 'muse' in model_name.lower() else (29.1 if 'qwen' in model_name.lower() else 18.0)
-        draft_w_gib = 1.6 if is_spec else 0.0
-        kv_gib = round(max(0.5, (tot_tok * 52 * 16 * 128 * 2) / (1024 ** 3)), 1) if tot_tok > 0 else 0.0
+        base_w_gib = next((gib for key, gib in MODEL_WEIGHTS_GIB if key in model_name.lower()), DEFAULT_WEIGHTS_GIB)
         gtt_used = hw.get('gtt_used_gib', 0.0)
-        host_used = sys_mem['used_gib']
-        sys_apps_gib = max(2.0, round(host_used - (base_w_gib + draft_w_gib + kv_gib), 1))
-        free_gib = max(0.0, round(tot_mem_gib - (base_w_gib + draft_w_gib + kv_gib + sys_apps_gib), 1))
+        gtt_tot = hw.get('gtt_total_gib', 44.0)
+        mem = split_memory(sys_mem['used_gib'], gtt_used, gtt_tot, tot_mem_gib,
+                           base_w_gib, DRAFT_WEIGHTS_GIB if is_spec else 0.0)
+        ram_base_gib, draft_w_gib, kv_gib, sys_apps_gib = mem['base'], mem['draft'], mem['kv'], mem['sys']
 
         mem_segments = [
-            ("Base", base_w_gib, 6),
+            ("Base", ram_base_gib, 6),
             ("Draft", draft_w_gib, 5),
             ("KV", kv_gib, 2),
             ("Sys", sys_apps_gib, 3),
         ]
-        mem_bar_w = max(10, (w - 6) - 10 - 18)
+        mem_bar_w = max(10, (w - 6) - 10 - 24)
         safe_addstr(stdscr, 7, 3, "RAM   ", curses.color_pair(7) | curses.A_BOLD)
         cur_x = 9
         used_cols = 0
@@ -472,25 +617,65 @@ def draw_screen(stdscr):
         if used_cols < mem_bar_w:
             safe_addstr(stdscr, 7, cur_x, "·" * (mem_bar_w - used_cols), curses.color_pair(1))
             cur_x += (mem_bar_w - used_cols)
-        used_sum = base_w_gib + draft_w_gib + kv_gib + sys_apps_gib
+        # GTT ceiling tick: how far up the RAM bar the iGPU is allowed to pin pages
+        gtt_cap_col = int(round((gtt_tot / tot_mem_gib) * mem_bar_w)) if tot_mem_gib > 0 else 0
+        if 0 < gtt_cap_col < mem_bar_w:
+            safe_addstr(stdscr, 7, 9 + gtt_cap_col, "┃", curses.color_pair(6) | curses.A_BOLD)
+        used_sum = ram_base_gib + draft_w_gib + kv_gib + sys_apps_gib
         safe_addstr(stdscr, 7, cur_x + 2, f"{used_sum:.1f}G / {tot_mem_gib:.1f}G", curses.color_pair(7) | curses.A_BOLD)
 
-        # Memory Legend
-        if is_compact_w:
-            leg_str = f"      ■ Base:{base_w_gib:.1f}G  ■ Draft:{draft_w_gib:.1f}G  ■ KV:{kv_gib:.1f}G  ■ Sys:{sys_apps_gib:.1f}G  □ Free:{free_gib:.1f}G"
+        # PAGE / SWAP Bar (Row 8)
+        tot_swap_gib = swap_info['total_gib']
+        used_swap_gib = swap_info['used_gib']
+        zram_used = swap_info['zram_used_gib']
+        nvme_used = swap_info['nvme_used_gib']
+
+        safe_addstr(stdscr, 8, 3, "PAGE  ", curses.color_pair(7) | curses.A_BOLD)
+        cur_x = 9
+        swap_used_cols = 0
+        if tot_swap_gib > 0:
+            swap_segments = [
+                ("zRAM", zram_used, 5),
+                ("NVMe", nvme_used, 3),
+            ]
+            for name, val, cp in swap_segments:
+                cols = int(round((val / tot_swap_gib) * mem_bar_w))
+                cols = min(cols, mem_bar_w - swap_used_cols)
+                if cols > 0:
+                    safe_addstr(stdscr, 8, cur_x, "█" * cols, curses.color_pair(cp))
+                    cur_x += cols
+                    swap_used_cols += cols
+            if swap_used_cols < mem_bar_w:
+                safe_addstr(stdscr, 8, cur_x, "·" * (mem_bar_w - swap_used_cols), curses.color_pair(1))
+                cur_x += (mem_bar_w - swap_used_cols)
+
+            if swap_io['total_mb_s'] > 0.2:
+                io_label = f" ({swap_io['total_mb_s']:.1f}M/s IO)"
+            else:
+                io_label = ""
+            safe_addstr(stdscr, 8, cur_x + 2, f"{used_swap_gib:.1f}G / {tot_swap_gib:.1f}G{io_label}", curses.color_pair(7) | curses.A_BOLD)
         else:
-            leg_str = f"      ■ Base: {base_w_gib:.1f}G   ■ Drafter: {draft_w_gib:.1f}G   ■ KV Cache: {kv_gib:.1f}G   ■ System: {sys_apps_gib:.1f}G   □ Free: {free_gib:.1f}G"
-        safe_addstr(stdscr, 8, 3, leg_str, curses.color_pair(1))
+            safe_addstr(stdscr, 8, 9, "No swap configured", curses.color_pair(1))
+
+        # Memory & Pagefile Legend (Row 9)
+        if is_compact_w:
+            leg_str = f"      ■ GTT:{mem['gtt']:.1f}G/{gtt_tot:.0f}G  ■ Sys:{sys_apps_gib:.1f}G │ ■ zRAM:{zram_used:.1f}G  ■ NVMe:{nvme_used:.1f}G"
+        else:
+            io_stat = f"   ⟳ IO: {swap_io['in_mb_s']:.1f}M in, {swap_io['out_mb_s']:.1f}M out" if swap_io['total_mb_s'] > 0.2 else ""
+            draft_leg = f"   ■ Draft: {draft_w_gib:.1f}G" if draft_w_gib > 0 else ""
+            leg_str = (f"      ■ Base: {ram_base_gib:.1f}G{draft_leg}   ■ KV: {kv_gib:.1f}G   ■ Sys: {sys_apps_gib:.1f}G"
+                       f"   ┃ GTT cap {gtt_tot:.0f}G  │  ■ zRAM: {zram_used:.1f}G   ■ NVMe: {nvme_used:.1f}G{io_stat}")
+        safe_addstr(stdscr, 9, 3, leg_str, curses.color_pair(1))
 
         # 4. Wide Inference Waveform (if space allows)
-        if sec1_h >= 12:
+        if sec1_h >= 14:
             chart_w = max(12, w - 8)
-            safe_addstr(stdscr, 10, 3, "·" * chart_w, curses.color_pair(1))
+            safe_addstr(stdscr, 11, 3, "·" * chart_w, curses.color_pair(1))
             wave_speed = braille_wave(hist_speed, chart_w, max_val=40.0)
-            safe_addstr(stdscr, 11, 3, wave_speed, curses.color_pair(2))
+            safe_addstr(stdscr, 12, 3, wave_speed, curses.color_pair(2))
             peak_spd = max(hist_speed) if hist_speed else 0.0
-            safe_addstr(stdscr, 12, 3, f"Inference Throughput (tok/s)", curses.color_pair(1))
-            safe_addstr(stdscr, 12, chart_w - 14, f"peak: {peak_spd:4.1f} t/s", curses.color_pair(1))
+            safe_addstr(stdscr, 13, 3, f"Inference Throughput (tok/s)", curses.color_pair(1))
+            safe_addstr(stdscr, 13, chart_w - 14, f"peak: {peak_spd:4.1f} t/s", curses.color_pair(1))
 
         # =========================================================================
         # SECTION 2: APU HARDWARE TELEMETRY
@@ -522,12 +707,14 @@ def draw_screen(stdscr):
         safe_addstr(stdscr, sec2_y + 2, rx + 6 + len(p_fill), p_emp)
         safe_addstr(stdscr, sec2_y + 2, rx + 6 + bar_w + 1, f"{ppt_w:4.1f}W", curses.color_pair(7))
 
-        gtt_tot = hw.get('gtt_total_gib', 44.0)
-        m_fill, m_emp = make_smooth_bar(gtt_used / gtt_tot if gtt_tot > 0 else 0.0, bar_w)
+        # GTT gauge: pinned GPU pages against the GTT ceiling (a slice of system RAM)
+        m_fill, m_emp = make_smooth_bar(mem['gtt_ratio'], bar_w)
+        gtt_color = curses.color_pair(4) if mem['gtt_ratio'] >= 0.9 else curses.color_pair(3)
+        gtt_val_str = f"{gtt_used:.1f}G" if is_narrow else f"{gtt_used:.1f}G/{gtt_tot:.1f}G"
         safe_addstr(stdscr, sec2_y + 3, rx, "GTT   ", curses.color_pair(7))
-        safe_addstr(stdscr, sec2_y + 3, rx + 6, m_fill, curses.color_pair(3))
+        safe_addstr(stdscr, sec2_y + 3, rx + 6, m_fill, gtt_color)
         safe_addstr(stdscr, sec2_y + 3, rx + 6 + len(m_fill), m_emp)
-        safe_addstr(stdscr, sec2_y + 3, rx + 6 + bar_w + 1, f"{gtt_used:.1f}G", curses.color_pair(7))
+        safe_addstr(stdscr, sec2_y + 3, rx + 6 + bar_w + 1, gtt_val_str, curses.color_pair(7))
 
         # Hardware Waveform
         if sec2_h >= 7:

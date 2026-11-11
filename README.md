@@ -2,7 +2,7 @@
 
 A personal library of local AI runtimes, model presets, and repeatable experiments.
 Built initially for a 64 GB ASUS ROG Flow Z13 with a Ryzen AI Max+ 395 / Radeon
-8060S on Linux. Currently serves one localhost-only Ollama instance at a time.
+8060S on Linux. Currently serves one localhost-only inference engine at a time.
 
 ## Quick start
 
@@ -17,8 +17,9 @@ cp .env.example .env
 opencode
 ```
 
-Every `ai up` waits for Ollama, then creates/updates **all checked-in presets**.
-OpenCode V2 discovers them through the localhost Ollama API; select one with
+Every `ai up` waits for the engine, then prepares the checked-in presets (applied
+on Ollama backends, compiled into `models.ini` for llama.cpp). OpenCode V2
+discovers them through the localhost inference API; select one with
 `/models`. OpenCode runs on the host as your normal user, even if you start PAIN
 with sudo. You can also use `./ai run qwen38-q8-tuned` for Ollama's own chat.
 New Modelfiles are picked up automatically on the next `ai up`.
@@ -27,30 +28,40 @@ If Docker requires sudo, use `sudo ./ai ...` for the commands above. The launche
 does not change your Docker permissions. Use the repo's `.env` for configuration
 when running with sudo, since sudo may strip shell environment variables.
 
-### Adopt the existing Ollama installation
+### Model storage
 
-PAIN uses the **existing external Docker volume `ollama`**. Models, saved MTP
-parameters, and named presets in that volume survive container replacement.
-Before the first start, stop the old container that owns port 11434:
+All weights live under `PAIN_MODELS_DIR` (default `/home/ryan/Models`), mounted at
+`/models` in the container. The Ollama backends keep their blob store in
+`$PAIN_MODELS_DIR/ollama`, so PAIN uses no custom Docker volumes. Presets
+reference GGUFs directly by path.
+
+If an older Ollama container owns port 11434, stop it before the first start:
 
 ```sh
 sudo docker stop ollama
 sudo ./ai up rocm
 ```
 
-The old container stays available for rollback. Stop PAIN with `sudo ./ai down`
-before restarting it. Never run both containers against the same volume at once,
-even if their ports differ. PAIN itself does not stop containers it doesn't own.
-If the old container has a different name, use that name instead of `ollama`.
+PAIN does not stop containers it doesn't own. Nothing is downloaded or started
+just by cloning this repo. For a fresh installation, download the model's GGUF
+into `PAIN_MODELS_DIR` (for example `Qwen3.8-27B-Q8_0.gguf` from the model card
+below), then start a backend.
 
-For a fresh installation, create the external volume first with
-`docker volume create ollama`, then download the base model:
+### Downloads
+
+`./ai pull` writes into `PAIN_MODELS_DIR` and works without a running backend:
 
 ```sh
+./ai pull https://huggingface.co/.../file.gguf
+./ai pull hf.co/owner/repo/file.gguf
+./ai pull owner/repo:file.gguf
 ./ai pull qwen3.8:27b-q8_0
 ```
 
-No models are downloaded or containers started just by cloning this repo.
+Partial downloads resume from `<name>.gguf.part`. `--sha256` verifies the
+finished file, `--force` replaces an existing one, and `HF_TOKEN` is used for
+gated Hugging Face repos. Ollama tags are pulled into `PAIN_MODELS_DIR/ollama`
+and hardlinked to `PAIN_MODELS_DIR/<tag>.gguf`; nothing is duplicated.
 
 ## Daily commands
 
@@ -61,13 +72,14 @@ No models are downloaded or containers started just by cloning this repo.
 ./ai logs                            # Follow server logs; Ctrl-C exits
 ./ai down                            # Stop/remove PAIN container; keep models
 ./ai config rocm                     # Inspect resolved Compose configuration
+./ai pull qwen3.8:27b-q8_0            # Download/export a model into PAIN_MODELS_DIR
 ./ai apply qwen38-q8-tuned            # Create/update the tuned model preset
 ./ai run qwen38-q8-tuned --keepalive=-1
 ```
 
-Both backends use one Compose project (`pain`) and one service (`ollama`).
+Both backends use one Compose project (`pain`) and one service (`engine`).
 Switching backends recreates that service, interrupts active requests, and unloads
-the model. The named model volume is shared. ROCm explicitly disables Vulkan
+the model. The same `PAIN_MODELS_DIR` is shared. ROCm explicitly disables Vulkan
 discovery; the Vulkan setup uses the standard image with Vulkan enabled.
 It also sets `OLLAMA_IGPU_ENABLE=1`: Ollama 0.40.13 otherwise filters out Vulkan
 integrated GPUs, including the Radeon 8060S, even when Vulkan is enabled.
@@ -153,6 +165,37 @@ Keep AC power, power profile, model, sampling, and occupied context identical
 between ROCm/Vulkan comparisons. Don't issue other inference requests during a
 sweep. CPU/GPU telemetry and automatic quality scoring are not implemented yet.
 
+## Training lab
+
+The lab runs repeatable CPU training jobs in a pinned PyTorch image, separate
+from the inference backends. It exists so research agents never hand-roll
+environments: one image, one provenance trail, one dataset cache.
+
+```sh
+./ai lab build
+./ai lab run --code ~/Projects/ryangavin/scalespace/swarms/track_b_tools \
+  --seed 0 --threads 8 -- python train.py --alpha 1.0 --lam 1e-4
+./ai lab shell --code ~/Projects/ryangavin/scalespace/swarms/track_b_tools
+```
+
+- `./ai lab build` builds `pain-lab` from `lab/Dockerfile` (torch 2.15.0 CPU
+  wheels, numpy, matplotlib, tqdm) and prints the image ID.
+- `./ai lab run` executes a command inside that image. The code directory is
+  mounted at `/workspace/code`, the experiments directory (default:
+  `experiments/`, see `PAIN_LAB_EXPERIMENTS`) at `/workspace/experiments`, and
+  a named `pain-lab-data` volume at `/data` for dataset caches. Determinism
+  env: `PYTHONHASHSEED=0`, `OMP_NUM_THREADS`/`MKL_NUM_THREADS` from
+  `--threads`, and `SEED` from `--seed`; job scripts must read `SEED`.
+- Every run appends a provenance row (utc, image ID, command, code git rev,
+  threads, seed, exit code, duration) to ignored `experiments/lab_runs.jsonl`.
+- `./ai lab shell` opens an interactive shell with the same mounts; it does
+  not write a provenance row.
+- `--code` defaults to `PAIN_LAB_CODE` in `.env`. The command goes after all
+  options and is passed through unchanged.
+
+Lab runs do not touch the inference container; they can execute while a model
+is loaded, at the cost of CPU contention on timing-sensitive benchmarks.
+
 ## Versioning and storage
 
 Image defaults are pinned to Ollama **0.40.13**, the version used during initial
@@ -161,7 +204,7 @@ new version. A digest (`ollama/ollama@sha256:...`) provides stronger pinning tha
 a tag. Benchmark output records the local image ID either way.
 
 `.env`, machine state, and benchmark results are ignored by Git. Model weights
-live in Docker storage, not this repo. Inspect results before explicitly sharing
+live under `PAIN_MODELS_DIR`, not this repo. Inspect results before explicitly sharing
 them: they contain generated text and metadata about your prompts.
 
 Current hardware baseline: full layer offload, Flash Attention, F16 KV, one
@@ -185,6 +228,53 @@ Compose rendering validates configuration without starting a container.
 - [Ollama runtime configuration](https://docs.ollama.com/faq)
 - [Qwen3.8-27B official model card](https://huggingface.co/Qwen/Qwen3.8-27B)
 
-Future additions: standalone llama.cpp backend, telemetry capture, result
-comparison, and more model families. These can be added without turning each
-parameter combination into a separate Compose setup.
+Future additions: telemetry capture, result comparison, and more model
+families. The Ollama and llama.cpp server backends and the training lab can
+be extended without turning each parameter combination into a separate
+Compose setup. See `TODO.md` for storage notes.
+
+## Omarchy dropdown (linked development install)
+
+Run once from this checkout:
+
+```sh
+./integrations/omarchy/install
+```
+
+This validates the plugin, backs up `~/.config/omarchy/shell.json`, symlinks
+`~/.config/omarchy/plugins/local.pain` to the repo, and enables an **AI** button
+on the right of the bar. It refuses to overwrite an unrelated plugin.
+The panel shows the same telemetry as `paintop`: the live slot (model, prompt
+and KV-cache hit, draft mode, speed, context used of the window), host RAM split
+into weights / draft / KV+compute / system with a tick at the GTT ceiling, GTT
+used of total, swap, GPU load, package power, and thermals. Pick a backend chip
+and press Start (or Restart). Stop, Monitor, and Logs sit alongside it, and the
+panel is keyboard-driven: h/l walk chips, j/k switch rows, Enter activates,
+S/D/M/G/R start/stop/monitor/logs/refresh. Left-click the bar glyph for the
+panel, right-click for `paintop`, middle-click to refresh.
+Starting or switching replaces the running PAIN container and interrupts requests.
+
+Start, Restart, and Stop run in the background: the hero shows the adapter's
+progress, the action buttons stay disabled until it exits, and a desktop
+notification reports the result (a failure also stays in the panel caption until
+the next action). Without a terminal the adapter escalates with pkexec if your
+user cannot access Docker. Monitor and Logs still open a terminal, and the CLI
+(`./ai up <backend>` etc.) keeps its sudo prompt and "Press Enter" behaviour.
+Simultaneous desktop start/stop commands are rejected. Existing CLI commands
+remain usable. This does not start inference at login or change Docker permissions.
+
+Edit `integrations/omarchy/pain/Widget.qml` directly for UI changes. Omarchy's
+plugin watcher does not follow the symlink into this checkout, and
+`omarchy-shell shell rescanPlugins` only re-reads manifests, so reload widget
+code with:
+
+```sh
+omarchy restart shell
+```
+
+Python adapter, `ai`, `paintop`, Compose, and preset edits are read from this
+checkout on the next invocation; no reinstall or packaging step is needed.
+Telemetry polls every 10 seconds while closed and every 2 seconds while open.
+Online means the local inference API responds, not proof of container ownership.
+Keep the checkout in place; if you move it, remove only the old symlink and
+rerun the installer. To hide the integration: `omarchy plugin disable local.pain`.
