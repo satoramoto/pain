@@ -2,11 +2,8 @@
 # No host Python: run PAIN's controller beside the engine in the Podman VM.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-case "$(uname -s):$(uname -m)" in
-  Darwin:arm64) ;;
-  *) echo 'This launcher requires an Apple Silicon Mac.' >&2; exit 1 ;;
-esac
-command -v podman >/dev/null 2>&1 || { echo 'Install Podman with libkrun first; see docs/macos.md.' >&2; exit 1; }
+. "$root/integrations/macos/common.sh"
+pain_require_runtime
 # Select the dedicated machine connection, never alter the user's global default.
 connection=${PAIN_PODMAN_CONNECTION:-pain-metal}
 models=${PAIN_MODELS_DIR:-$HOME/Models}

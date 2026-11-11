@@ -77,7 +77,9 @@ forwarding to the real host Metal backend. It requires an APIR-enabled libkrun
 virtualization stack; stock Podman GPU support alone is insufficient. The Mac
 launcher runs Python in a controller container. See [Mac setup and acceptance
 checks](docs/macos.md) before running `./integrations/macos/ai up llamacpp-metal`.
-This is not yet a validated Mac release or a Tauri bundle.
+The Mac QA workflow packages a Tauri tray app with private APIR/Metal libraries.
+It is ready for hardware QA, not yet a validated Mac release. See `desktop/`
+for Storybook stories for the web tray and native Omarchy panel captures.
 
 ## Daily commands
 

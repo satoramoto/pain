@@ -21,7 +21,7 @@ fi
 test "$(git -C "$work/src" rev-parse HEAD)" = "$revision" || { echo 'Source revision mismatch.' >&2; exit 1; }
 cmake -S "$work/src" -B "$work/build" -DCMAKE_BUILD_TYPE=Release \
   -DGGML_NATIVE=OFF -DGGML_VIRTGPU=ON -DGGML_VIRTGPU_BACKEND=ONLY \
-  -DGGML_METAL=ON -DGGML_BACKEND_DL=ON -DLLAMA_BUILD_TESTS=OFF
+  -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BACKEND_DL=ON -DLLAMA_BUILD_TESTS=OFF
 cmake --build "$work/build" --parallel 4 --target ggml-metal ggml-virtgpu-backend
 printf 'Metal libraries: %s\n' "$work/build/bin"
 printf '%s\n' "$revision" > "$work/build/bin/pain-llama-revision"

@@ -1,0 +1,28 @@
+{
+  "name": "pain-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "node ../scripts/prepare-ui.mjs",
+    "dev": "vite --host 127.0.0.1",
+    "build": "npm run prepare && tsc --noEmit && vite build",
+    "storybook": "storybook dev -p 6016 --host 127.0.0.1 --no-open",
+    "build-storybook": "npm run prepare && storybook build",
+    "tauri": "tauri",
+    "stage": "node ../scripts/stage-desktop.mjs",
+    "check:stories": "node check-stories.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@storybook/html-vite": "10.6.7",
+    "@tauri-apps/cli": "^2.10.1",
+    "story-spec": "https://github.com/satoramoto/story-spec/archive/cbfaa1b6d1b5dcb80ae0d03184d46241d96f8a76.tar.gz",
+    "storybook": "10.6.7",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  }
+}

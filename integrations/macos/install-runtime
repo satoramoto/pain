@@ -1,0 +1,35 @@
+#!/bin/sh
+# Install a CI-built, self-contained APIR/Metal runtime for this user only.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+. "$root/integrations/macos/common.sh"
+[ "$(uname -s):$(uname -m)" = Darwin:arm64 ] || { echo 'Requires an Apple Silicon Mac.' >&2; exit 1; }
+archive=${1:?Usage: install-runtime /path/to/pain-macos-runtime-arm64.tar.gz}
+archive=$(CDPATH= cd -- "$(dirname -- "$archive")" && pwd)/$(basename -- "$archive")
+[ -f "$archive.sha256" ] || { echo 'Missing SHA-256 file beside the runtime archive.' >&2; exit 1; }
+expected=$(awk 'NR == 1 {print $1}' "$archive.sha256")
+actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+[ "$expected" = "$actual" ] || { echo 'Runtime checksum mismatch.' >&2; exit 1; }
+if command -v podman >/dev/null && [ "$(podman machine inspect pain-metal --format '{{.State}}' 2>/dev/null || true)" = running ]; then
+  echo 'Stop the dedicated pain-metal VM before updating its runtime.' >&2; exit 1
+fi
+# Only regular files/directories below macos-runtime are accepted from artifacts.
+tar -tzf "$archive" | awk '/^\// || /(^|\/)\.\.(\/|$)/ || $0 !~ /^macos-runtime(\/|$)/ {bad=1} END {exit bad}'
+tar -tvzf "$archive" | awk 'substr($1,1,1) != "-" && substr($1,1,1) != "d" {bad=1} END {exit bad}'
+mkdir -p "$pain_data/runtime"
+version="qa-$(date +%Y%m%d%H%M%S)-$$"
+stage="$pain_data/runtime/$version"
+mkdir "$stage"
+trap 'echo "Runtime installation did not complete; previous runtime is unchanged." >&2' EXIT
+tar -xzf "$archive" --strip-components 1 -C "$stage"
+for file in lib/libvirglrenderer.1.dylib lib/libggml-metal.dylib lib/libggml-virtgpu-backend.dylib libexec/krunkit.real; do
+  [ -f "$stage/$file" ] || { echo "Runtime is missing $file" >&2; exit 1; }
+  codesign --verify --strict "$stage/$file"
+done
+cmp "$stage/llama-revision" "$root/containers/virtgpu/llama-revision"
+cmp "$stage/virgl-revision" "$root/integrations/macos/virgl-revision"
+[ ! -e "$pain_runtime" ] || [ -L "$pain_runtime" ] || { echo 'Refusing to replace an unrelated runtime directory.' >&2; exit 1; }
+ln -sfn "$version" "$pain_runtime"
+trap - EXIT
+printf 'Installed private APIR/Metal runtime: %s\n' "$pain_runtime"
+printf 'Next: %s/integrations/macos/setup\n' "$root"

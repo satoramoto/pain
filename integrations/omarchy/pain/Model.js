@@ -53,7 +53,6 @@ function cacheHitText(inf) {
 
 function draftText(inf, status) {
   var spec = inf && inf.speculative
-  if (!spec && status && String(status.backend || "").indexOf("llamacpp") === 0) spec = true
   return spec ? "DFlash 16-token draft" : "Unassisted"
 }
 

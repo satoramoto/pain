@@ -1,127 +1,139 @@
-# Apple Silicon Metal container test
+# Apple Silicon QA
 
-This is an experimental integration, not the all-in-one end-user release.
-The Linux ARM64 llama-server runs in Podman. Its VirtGPU backend forwards
-operations to the real ggml-metal backend in the Mac virtualization process.
-It does not run the macOS llama-server executable in Linux, and does not use
-Vulkan/MoltenVK. Python and the PAIN controller also run in a container.
+PAIN runs Linux ARM64 llama-server in a dedicated Podman/libkrun VM. VirtGPU
+forwards computation to llama.cpp's real Metal backend in the Mac virtualization
+process. The host APIR libraries cannot live inside the Linux container, so the
+Mac runtime artifact bundles them alongside a private krunkit and its dynamic
+library dependencies. It does not replace system or Homebrew libraries.
 
-The current upstream backend requires APIR-enabled virglrenderer. Merely
-installing stock Podman or selecting libkrun does **not** establish this support.
+The Mac QA workflow builds two artifacts from this branch:
 
-## What lives where
+- `pain-macos-app-arm64`: a Tauri DMG, including the runtime archive and PAIN's
+  controller sources. Use this for the tray application.
+- `pain-macos-runtime-arm64`: the runtime tarball and SHA-256 file. Use this with
+  a Git checkout when testing the CLI or changing code locally.
 
-- Mac: Podman/libkrun, APIR-enabled virglrenderer, matching Metal/remoting
-  libraries, this checkout and model storage. No system-wide Python or inference
-  service is required by the launcher.
-- VM: container engine and its Compose provider (controller image includes it).
-- Containers: Python controller and Linux llama-server with VirtGPU.
-- The controller has the Podman socket so it can manage sibling engine containers.
-  Use a dedicated PAIN machine, not one containing unrelated workloads.
-- No Tauri bundle or Storybook renderer is included in this backend test.
+These are QA builds, ad-hoc signed rather than Developer ID signed/notarized.
+A real Apple Silicon run is still needed before calling this a supported release.
+The app targets macOS 15 or newer. CI builds the dylibs on Apple Silicon; Linux
+checks only validate the container and cross-platform application code.
 
-## Prepare the virtualization stack (developer Mac)
+## App setup
 
-Use an Apple Silicon Mac with Podman and libkrun/krunkit installed. Upstream
-lists macOS 14/15 as supported and 26 as untested. We still need to test our
-exact combination. Record macOS version, chip, memory, Podman and krunkit versions.
+1. Install the official Podman macOS package (the permitted virtualization
+   dependency). No host Python, CMake, Rust, Node, or inference service is needed.
+2. Download the app artifact from the **Mac QA** workflow for this branch. Open
+   the DMG and copy PAIN to Applications. macOS may require Open Anyway for this
+   unsigned-distribution QA build.
+3. Open PAIN and click **Prepare VM**. This installs the private runtime under
+   the application's user data directory, creates `pain-metal` if missing, and
+   starts it. The first machine setup requires internet access for the Linux image.
+4. Enter an HTTPS GGUF download URL for a small supported model. PAIN downloads
+   into `~/Models` and registers a 4096-token preset. Click **Start** afterward.
+   The first start builds the controller and inference containers in the VM.
+5. Use the menu-bar PAIN entry to reopen the window. Closing the window hides it;
+   quitting the UI keeps inference running. Use **Stop** to stop inference.
 
-Build the host libraries from the **same pinned llama.cpp commit** as the guest:
+The tray reports inference state/context and measured generation speed. It does
+not present Linux VM memory statistics as Mac hardware telemetry. Model weights
+are external persistent data, never part of the app bundle.
 
-```sh
-./integrations/macos/build-metal-libraries
-```
+## Test a checkout instead
 
-This developer-only step needs Git, CMake and Apple command-line build tools.
-It installs nothing globally; output stays under `.build/`. A distributable
-virtualization package must eventually include these libraries and their
-runtime dependencies so the recipient does not need build tools.
-
-Build APIR-enabled virglrenderer using the upstream development instructions:
-<https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/VirtGPU/development.md>
-The documented Mac branch is:
-<https://gitlab.freedesktop.org/kpouget/virglrenderer/-/tree/main-macos>
-Record its exact revision for the test. This dependency is not yet pinned or
-bundled by PAIN; integration of that virtualization package remains a release gate.
-Do not overwrite system/Homebrew libraries to make it work.
-
-Create a **new dedicated machine**; don't replace an existing machine:
+Pull `fix/mac-virtgpu`, download the runtime artifact produced by the matching
+commit, and extract the GitHub artifact ZIP. Keep the tarball and its `.sha256`
+file beside one another. From the checkout:
 
 ```sh
-CONTAINERS_MACHINE_PROVIDER=libkrun podman machine init --cpus 4 --memory 8192 --disk-size 60 pain-metal
-export PAIN_METAL_LIB_DIR="$PWD/.build/metal-$(cat containers/virtgpu/llama-revision)/build/bin"
-export PAIN_VIRGL_LIB_DIR="/absolute/path/to/virglrenderer/build/src"
-./integrations/macos/start-machine
-```
-
-Run the start script from a local Mac terminal. Upstream documents limitations
-with DYLD_LIBRARY_PATH when launched over SSH. The script configures the legacy
-Venus-to-APIR routing workaround, which disables ordinary Vulkan forwarding in
-this VM. Stop only this dedicated machine before restarting it with changed
-libraries. A running machine won't pick up new host environment variables.
-
-Keep the checkout and models under your Mac home directory so Podman's default
-host sharing exposes both at the same absolute paths in the VM. Memory above is
-an initial small-model test allocation, not a recommendation for your large
-presets. Upstream documents a 64 GiB RAM+VRAM addressable limit for libkrun;
-verify the current limit on the actual stack before testing large models.
-
-## Run without host Python
-
-```sh
-export PAIN_MODELS_DIR="$HOME/Models"
-./integrations/macos/ai presets
-./integrations/macos/ai config llamacpp-metal
+./integrations/macos/install-runtime ~/Downloads/pain-macos-runtime-arm64.tar.gz
+./integrations/macos/setup
+./integrations/macos/ai add-model https://your-model-host/path/to/model.gguf
 ./integrations/macos/ai up llamacpp-metal
 ./integrations/macos/ai status
-./integrations/macos/ai logs
+./integrations/macos/ai logs --once
 ./integrations/macos/ai down
 ```
 
-The launcher selects the `pain-metal` Podman connection explicitly. Override
-`PAIN_PODMAN_CONNECTION` if Podman named the connection differently. It does not
-change the global default or start/stop the VM implicitly. First invocation
-builds the Python/Podman controller image; `up llamacpp-metal` builds the pinned
-llama.cpp image. To refresh controller dependencies, rebuild with:
+`install-runtime` verifies the checksum and code signatures, checks host/guest
+revisions, and refuses updates while `pain-metal` is running. For an upgrade,
+stop inference, then run `CONTAINERS_MACHINE_PROVIDER=libkrun podman machine stop
+pain-metal` before installing the new artifact. Previous runtime versions remain
+available under the data directory; the installer only switches its `current`
+symlink after validation. Do not run a checkout and packaged app against the same
+machine simultaneously; both intentionally own the `pain-metal` VM.
+
+The checkout installer defaults to `~/Library/Application Support/PAIN`.
+`PAIN_DATA_DIR` overrides it. The Tauri app uses its own application-data directory
+and passes that path to the same scripts. Neither writes global container config.
+
+Keep checkout and model storage under your Mac home directory so Podman's host
+sharing exposes them at the same absolute paths inside the VM. Optional settings:
+
+- `PAIN_MODELS_DIR`: absolute Mac model directory (default `~/Models`).
+- `PAIN_VM_CPUS`, `PAIN_VM_MEMORY`, `PAIN_VM_DISK`: creation-time settings (4,
+  8192 MiB, 60 GiB). Existing machines are never silently resized/replaced.
+- `PAIN_PODMAN_CONNECTION`: connection name if yours differs from `pain-metal`.
+
+The controller image contains Python and the Compose provider. It uses the
+Podman VM socket to manage sibling containers, not nested virtualization. That
+socket grants control over the dedicated VM's containers. The start script uses
+a scoped helper-binary config to select the bundled krunkit wrapper. The wrapper
+sets APIR loader variables immediately before exec, avoiding dependency on a
+terminal's inherited DYLD settings.
+
+The APIR stack still uses upstream's Venus-capset routing workaround. This
+machine therefore isn't for ordinary Vulkan workloads. Although virglrenderer
+links MoltenVK as a dependency, inference is admitted only when llama.cpp
+enumerates a `[virtgpu] Metal…` device. Missing/incorrect libraries fail before
+replacing the running engine. CPU and Vulkan are never silently called Metal.
+
+## QA checklist
+
+- Record macOS, chip, memory, Podman version and branch commit.
+- Run `lsof -c krunkit.real` and verify private virglrenderer/Metal libraries load.
+- Confirm ARM64 image architecture; no x86 emulation should be involved.
+- Start with a small GGUF. Require a remoted Metal device, model-load/offload logs,
+  and a completed `/v1/chat/completions` response on localhost:11434.
+- Exercise downloads, start, stop, restart, bounded logs, menu-bar reopen, and
+  model persistence across VM restart. No inference server should appear on the host.
+- Check missing runtime, checksum mismatch, and unsupported-device errors.
+- Record prompt/generation speed and memory before large Q8, long-context or
+  speculative-decoding experiments. Upstream documents a libkrun RAM+VRAM
+  addressing limit of 64 GiB; verify the exact installed stack before large runs.
+- `ai run` and `ai bench` remain Ollama-specific; use the OpenAI-compatible API
+  for llama.cpp generation and comparison.
+
+## Building the distribution
+
+The GitHub workflow `.github/workflows/macos-qa.yml` builds the pinned APIR branch
+and matching host/guest llama.cpp revision, recursively collects non-system
+Mach-O dependencies, rewrites loader paths, verifies no Homebrew/build paths
+remain, and ad-hoc signs the copies. Build prerequisites are installed only on
+CI. `integrations/macos/build-runtime` is the equivalent developer-Mac entry
+point. Then run `npm --prefix desktop ci`, `npm --prefix desktop run stage`, and
+`npm --prefix desktop run tauri build -- --target aarch64-apple-darwin`.
+
+Sources: [llama.cpp VirtGPU](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/VirtGPU.md),
+[APIR Mac renderer](https://gitlab.freedesktop.org/kpouget/virglrenderer/-/tree/main-macos).
+
+## UI stories and checks
+
+`desktop/` contains the Tauri view and Storybook. The web view uses generated
+exports of Omarchy's `Model.js`, and both renderer catalogs consume shared JSON
+fixtures. Tauri stories are interactive; Omarchy stories show native QML captures
+of the actual Widget.qml panel markup using installed Omarchy components. They
+are not a browser imitation, but do not test native popup placement or IPC.
+Regenerate captures on Omarchy with `python scripts/render-omarchy.py`.
 
 ```sh
-podman --connection pain-metal build -t localhost/pain-controller:dev containers/controller
+npm --prefix desktop ci
+npm --prefix desktop run build
+npm --prefix desktop run build-storybook
+python -m unittest discover -s tests -v
 ```
 
-The Metal probe enumerates actual devices before replacing an engine. It refuses
-CPU-only, plain Vulkan and native-only Metal enumeration. Startup also pins the
-enumerated remoted Metal device. Successful API readiness alone is not evidence
-of full model offload: inspect model-load logs and run a generation request.
-
-Use an existing preset only when its GGUF fits comfortably in memory. For an
-initial small test, put a supported GGUF in `PAIN_MODELS_DIR` and create
-`models/mac-smoke/default.Modelfile` locally with `FROM /models/<filename>.gguf`
-and `PARAMETER num_ctx 4096`. `./integrations/macos/ai pull <GGUF-URL>` can download
-it without host Python. Model weights are never included in the application image.
-After startup, request `/v1/chat/completions` on localhost:11434 with the preset
-name `mac-smoke-default`. Remove only your temporary preset when done.
-
-The existing `ai run` and `ai bench` are Ollama-specific; use the OpenAI-compatible
-API for this backend. Linux hardware telemetry in paintop describes VM resources
-when run in the controller, not the Mac's physical RAM/GPU. Mac telemetry and
-tray UI are still separate work.
-
-## Acceptance checks on the Mac
-
-1. Confirm `lsof -c krunkit` shows the intended virglrenderer and Metal libraries.
-2. Check the image architecture is ARM64; no x86 emulation should be needed.
-3. With the APIR libraries unavailable, verify startup fails clearly and does not
-   replace a previously running PAIN engine.
-4. With the correct stack, require a remoted Metal device in the startup probe,
-   successful model loading, offload evidence in logs, and a completed generation.
-5. Exercise status, logs, stop, restart, and model persistence across VM restart.
-6. Record prompt/generation speed and memory with a small model before trying
-   large Q8, long-context or speculative-decoding presets. Those features are
-   not validated on this stack yet.
-
-## Validation before handing off
-
-Run the Python unit suite, render every Compose backend, check shell syntax,
-build the Linux VirtGPU and controller images, and verify the missing-GPU
-failure path. The Linux build checks cannot establish macOS Metal correctness.
-Mac acceptance above is required before calling this shippable.
+In this workspace, start Storybook through the shared preview manager:
+`node ~/Projects/satoramoto/zen-flow/herdr/scripts/previews.mjs ensure pain-desktop`.
+Then `cd desktop && npm run check:stories` checks both catalogs with Playwright's
+own headless Chromium. For a plain checkout elsewhere, `npm run storybook`
+serves it on port 6016. Linux Tauri distribution is deliberately not configured.

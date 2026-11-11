@@ -120,3 +120,20 @@ class PodmanCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'manifest'):
                 pain.pull_ollama('example:test')
             self.assertEqual(run.call_args.args[0][:3], ['podman', 'run', '--rm'])
+
+class DesktopCommandTests(unittest.TestCase):
+    def test_download_registers_a_small_context_preset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            with patch.object(pain, 'ROOT', root), \
+                 patch.object(pain.sys, 'argv', ['ai','add-model','https://example.com/tiny.gguf']), \
+                 patch.object(pain, 'pull', return_value=Path('/models/tiny.gguf')):
+                pain.main()
+            presets=list(root.glob('models/local-*/default.Modelfile'))
+            self.assertEqual(len(presets),1)
+            self.assertEqual(presets[0].read_text(),'FROM /models/tiny.gguf\nPARAMETER num_ctx 4096\n')
+
+    def test_snapshot_logs_do_not_follow(self):
+        with patch.object(pain.sys, 'argv', ['ai','logs','--once']), patch.object(pain,'compose') as compose:
+            pain.main()
+            compose.assert_called_once_with('logs','--tail','100','engine')

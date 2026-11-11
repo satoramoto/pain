@@ -860,8 +860,12 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('up', help='Start or switch backend')
     p.add_argument('backend', choices=BACKENDS)
-    for name in ('down', 'status', 'logs', 'presets', 'top', 'sync'):
+    for name in ('down', 'status', 'presets', 'top', 'sync'):
         sub.add_parser(name)
+    p = sub.add_parser('logs', help='Show engine logs')
+    p.add_argument('--once', action='store_true', help='Print recent logs without following')
+    p = sub.add_parser('add-model', help='Download a GGUF and register a small-context local preset')
+    p.add_argument('url')
     p = sub.add_parser('config', help='Render a backend Compose configuration')
     p.add_argument('backend', choices=BACKENDS)
     p = sub.add_parser('pull', help='Download a GGUF into PAIN_MODELS_DIR')
@@ -912,7 +916,7 @@ def main():
         RUNTIME_STATE.unlink(missing_ok=True)
         CONTAINER_STATE.unlink(missing_ok=True)
     elif args.command == 'logs':
-        compose('logs', '-f', '--tail', '100', 'engine')
+        compose('logs', *([] if args.once else ['-f']), '--tail', '100', 'engine')
     elif args.command == 'status':
         compose('ps')
         if backend().startswith('llamacpp'):
@@ -930,6 +934,17 @@ def main():
             print(f'{name:32} {path.relative_to(ROOT)}')
     elif args.command == 'apply':
         apply(args.preset)
+    elif args.command == 'add-model':
+        if not args.url.startswith('https://'):
+            raise ValueError('Use an HTTPS GGUF URL.')
+        target = pull(args.url)
+        if target is None:
+            raise ValueError('Download did not return a model path.')
+        name = hashlib.sha256(str(target).encode()).hexdigest()[:12]
+        preset = ROOT / 'models' / f'local-{name}' / 'default.Modelfile'
+        preset.parent.mkdir(parents=True, exist_ok=True)
+        preset.write_text(f'FROM /models/{target.name}\nPARAMETER num_ctx 4096\n')
+        print(f'Added local-{name}-default. Restart the engine to load it.')
     elif args.command == 'pull':
         pull(args.source, name=args.name, sha256=args.sha256, force=args.force)
     elif args.command == 'run':

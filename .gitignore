@@ -6,3 +6,11 @@ benchmarks/results/*
 !benchmarks/results/.gitkeep
 experiments/lab_runs.jsonl
 .build/
+
+node_modules/
+desktop/dist/
+desktop/storybook-static/
+desktop/src/model.js
+desktop/src-tauri/target/
+desktop/src-tauri/resources/
+desktop/src-tauri/gen/
