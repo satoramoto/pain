@@ -72,7 +72,7 @@ def compose(*args, selected=None, capture=False):
 def api(path, data=None, timeout=1800):
     port = int(config().get('PAIN_PORT', '11434'))
     payload = json.dumps(data).encode() if data is not None else None
-    request = urllib.request.Request(f'http://127.0.0.1:{port}/api/{path}',
+    request = urllib.request.Request(f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/api/{path}",
                                      data=payload,
                                      headers={'Content-Type': 'application/json'})
     try:
@@ -99,7 +99,7 @@ def container():
     except (OSError, subprocess.CalledProcessError) as exc:
         try:
             port = int(config().get('PAIN_PORT', '11434'))
-            check_url = f'http://127.0.0.1:{port}/health' if backend().startswith('llamacpp') else f'http://127.0.0.1:{port}/api/version'
+            check_url = f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/health" if backend().startswith('llamacpp') else f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/api/version"
             req = urllib.request.Request(check_url)
             with urllib.request.urlopen(req, timeout=3) as res:
                 pass
@@ -145,7 +145,7 @@ def up(name):
         port = int(config().get('PAIN_PORT', '11434'))
         while time.monotonic() < deadline:
             try:
-                req = urllib.request.Request(f'http://127.0.0.1:{port}/health')
+                req = urllib.request.Request(f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/health")
                 with urllib.request.urlopen(req, timeout=3) as res:
                     if res.status == 200:
                         break
@@ -921,7 +921,7 @@ def main():
         compose('ps')
         if backend().startswith('llamacpp'):
             port = config().get('PAIN_PORT', '11434')
-            with urllib.request.urlopen(f'http://127.0.0.1:{port}/models', timeout=10) as response:
+            with urllib.request.urlopen(f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/models", timeout=10) as response:
                 print(json.dumps(json.load(response), indent=2))
         else:
             print(json.dumps(api('ps'), indent=2))

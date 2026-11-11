@@ -137,3 +137,46 @@ In this workspace, start Storybook through the shared preview manager:
 Then `cd desktop && npm run check:stories` checks both catalogs with Playwright's
 own headless Chromium. For a plain checkout elsewhere, `npm run storybook`
 serves it on port 6016. Linux Tauri distribution is deliberately not configured.
+
+## Getting Started in the app
+
+On first launch, PAIN opens **Getting Started**. Reopen it with **Help → Getting
+Started**, the tray menu, or the dashboard button. **Set up my Mac** runs the
+whole default sequence: install/reuse Podman, unpack the private APIR runtime,
+boot the VM, download Qwen3 4B Q4_K_M (about 2.5 GB), start llama.cpp, and
+install/reuse OpenCode. A failed step stops the sequence; **Retry this step**
+keeps completed steps in the current session. Reopening the app safely reruns
+checks and reuses downloaded weights and installed tools.
+
+The default Podman VM uses 4 CPUs, 8 GB RAM and a 60 GB expandable disk. Allow
+several GB of downloads. The official Podman installer is pinned to 6.2.0 and
+checked against its release SHA-256 before macOS installs it; macOS may ask for
+an administrator password. Metal/APIR remains experimental and needs hardware QA.
+No host Homebrew, Node or Python installation is required.
+
+**Docker Desktop** is an alternative for CPU inference. Setup downloads the
+Apple Silicon Docker app if missing, verifies it with Gatekeeper, then opens
+Docker Desktop. Accept its license and finish its first-run prompts. PAIN uses
+the explicit `desktop-linux` context without changing Docker's global context.
+The controller runs in a sibling container and accesses the Docker socket.
+Stop the current engine before choosing a different framework.
+
+OpenCode is reused when found on the application PATH; otherwise its official
+Apple Silicon binary is installed in PAIN's private data directory. Both V1 and
+V2 configuration formats are supported. **Open OpenCode** opens Terminal using
+PAIN's `OpenCode.command` launcher. It injects a private `opencode.json` through
+`OPENCODE_CONFIG`, selecting the local provider. Your global config, credentials
+and normal `opencode` invocation are unchanged. This launcher starts in your
+home directory; navigate to your project when using OpenCode.
+
+### Onboarding QA
+
+- Fresh Apple Silicon Mac: accept defaults, approve the macOS installer prompt,
+  and verify all five steps finish and OpenCode can generate using PAIN.
+- Existing Podman/OpenCode: verify setup reuses them and leaves global configs
+  intact. Cancel an installation or interrupt a download, then retry.
+- Docker: complete first-run prompts, verify CPU inference, stop it, and switch
+  back to Podman. Check Help and tray Getting Started both reopen the screen.
+- Run `npm --prefix desktop run test:stories -- --no-browser` for the virtual DOM
+  plays, and `-- --browser-all` against the shared preview for all renderers.
+  `check:stories` also captures the screen at 460 px and checks overflow.

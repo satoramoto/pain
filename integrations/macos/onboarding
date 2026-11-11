@@ -1,0 +1,91 @@
+#!/bin/sh
+# Invoked by the desktop app with an allowlisted step and framework.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+. "$root/integrations/macos/common.sh"
+export PATH="$pain_data/bin:$HOME/.opencode/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH"
+step=${1:-}; framework=${2:-podman}
+case "$framework" in podman|docker) ;; *) echo 'Unknown container framework.' >&2; exit 1;; esac
+[ "$(uname -s):$(uname -m)" = Darwin:arm64 ] || { echo 'Setup requires an Apple Silicon Mac.' >&2; exit 1; }
+mkdir -p "$pain_data/downloads" "$pain_data/bin"
+fetch() { curl --silent --show-error --fail --location --retry 3 --connect-timeout 30 --proto '=https' --proto-redir '=https' "$1" -o "$2.part"; mv "$2.part" "$2"; }
+case "$step" in
+  dependencies)
+    if [ "$framework" = podman ]; then
+      if ! command -v podman >/dev/null; then
+        pkg="$pain_data/downloads/podman.pkg"
+        fetch 'https://github.com/podman-container-tools/podman/releases/download/v6.2.0/podman-installer-macos-arm64.pkg' "$pkg"
+        printf '%s  %s\n' b4628a29a4c70bbec757a84d0e429882d358cab18956a0017f99df74b37201a7 "$pkg" | shasum -a 256 -c -
+        pkgutil --check-signature "$pkg"
+        # AppleScript receives a positional argument; paths never become script source.
+        osascript - "$pkg" <<'APPLESCRIPT'
+on run argv
+  do shell script "/usr/sbin/installer -pkg " & quoted form of (item 1 of argv) & " -target /" with administrator privileges
+end run
+APPLESCRIPT
+      fi
+      podman --version
+    else
+      if [ ! -d /Applications/Docker.app ]; then
+        dmg="$pain_data/downloads/Docker.dmg"
+        fetch 'https://desktop.docker.com/mac/main/arm64/Docker.dmg' "$dmg"
+        mount="$pain_data/downloads/docker-mount"
+        mkdir -p "$mount"
+        hdiutil attach "$dmg" -mountpoint "$mount" -nobrowse
+        trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+        spctl --assess --type execute "$mount/Docker.app"
+        ditto "$mount/Docker.app" /Applications/Docker.app
+        hdiutil detach "$mount"; trap - EXIT
+      fi
+      open -a Docker
+      echo 'Docker Desktop opened. Accept its terms and complete any first-run prompts.'
+    fi
+    ;;
+  machine)
+    if [ "$framework" = podman ]; then
+      exec "$root/integrations/macos/setup"
+    fi
+    open -a Docker
+    count=0
+    until docker --context desktop-linux info >/dev/null 2>&1; do
+      count=$((count + 1))
+      [ "$count" -lt 180 ] || { echo 'Docker is not ready. Finish Docker Desktop setup, then click Retry this step.' >&2; exit 1; }
+      sleep 2
+    done
+    ;;
+  model)
+    exec "$root/integrations/macos/ai" add-model 'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf'
+    ;;
+  engine)
+    if [ "$framework" = podman ]; then backend=llamacpp-metal; else backend=llamacpp-cpu; fi
+    exec "$root/integrations/macos/ai" up "$backend"
+    ;;
+  opencode)
+    if ! command -v opencode >/dev/null; then
+      zip="$pain_data/downloads/opencode.zip"
+      fetch 'https://opencode.ai/update/api/latest/cli/opencode/opencode-darwin-arm64.zip' "$zip"
+      stage=$(mktemp -d "$pain_data/downloads/opencode.XXXXXX")
+      trap 'rm -rf "$stage"' EXIT
+      ditto -xk "$zip" "$stage"
+      [ -f "$stage/opencode" ] || { echo 'OpenCode archive layout changed; install OpenCode and retry.' >&2; exit 1; }
+      install -m 755 "$stage/opencode" "$pain_data/bin/opencode"
+    fi
+    opencode --version
+    ;;
+  launch)
+    # A private config is injected only for this launcher, preserving global settings.
+    launcher="$pain_data/OpenCode.command"
+    cat > "$launcher" <<'LAUNCHER'
+#!/bin/sh
+set -eu
+base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export PATH="$base/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export OPENCODE_CONFIG="$base/opencode.json"
+cd "$HOME"
+exec opencode
+LAUNCHER
+    chmod 700 "$launcher"
+    open -a Terminal "$launcher"
+    ;;
+  *) echo 'Unknown onboarding step.' >&2; exit 1 ;;
+esac

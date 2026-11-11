@@ -3,6 +3,23 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 . "$root/integrations/macos/common.sh"
+framework=${PAIN_RUNTIME:-podman}
+if [ "$framework" = docker ]; then
+  export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"
+  models=${PAIN_MODELS_DIR:-$HOME/Models}
+  case "$models" in /*) ;; *) echo 'PAIN_MODELS_DIR must be an absolute Mac path.' >&2; exit 1 ;; esac
+  mkdir -p "$models"
+  image=pain-controller-docker:dev
+  if ! docker --context desktop-linux image inspect "$image" >/dev/null 2>&1; then
+    docker --context desktop-linux build -t "$image" "$root/containers/controller-docker"
+  fi
+  exec docker --context desktop-linux run --rm -i \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$root:$root" -v "$models:$models" -w "$root" \
+    -e PAIN_RUNTIME=docker -e PAIN_API_HOST=host.docker.internal -e "PAIN_MODELS_DIR=$models" \
+    "$image" "$root/ai" "$@"
+fi
+[ "$framework" = podman ] || { echo 'Unsupported runtime.' >&2; exit 1; }
 pain_require_runtime
 # Select the dedicated machine connection, never alter the user's global default.
 connection=${PAIN_PODMAN_CONNECTION:-pain-metal}

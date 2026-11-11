@@ -1,0 +1,16 @@
+import { domStory } from './story-dom';
+import './style.css';
+import { expect, fn, userEvent, within } from 'storybook/test';
+import { scenario } from 'story-spec';
+import { initialSetup, onboarding, runSetup, type Step, type Framework, type SetupState } from './onboarding';
+export default {title:'Help/Getting Started',parameters:{spec:{capability:'desktop-onboarding',requirement:'Set up local AI from Getting Started',shall:'Getting Started SHALL explain and run setup with a single default action, runtime choices and recoverable failures.'}}};
+function view(state: SetupState, execute: (step: Step, framework: Framework) => Promise<unknown> = fn(async () => {})) {
+  const host = document.createElement('div');
+  const render = () => host.replaceChildren(onboarding(state, () => {void runSetup(state,execute,render);}, framework => {state.framework=framework;render();}, fn(), fn()));
+  render(); return domStory(host);
+}
+export const Welcome = scenario({when:'Getting Started opens for the first time',then:'Podman is selected and one action starts setup',check:async ({canvasElement})=>{const c=within(canvasElement);await expect(c.getByRole('radio',{name:/Podman/})).toBeChecked();await expect(c.getByRole('button',{name:'Set up my Mac'})).toBeEnabled();}},{render:()=>view(initialSetup())});
+export const DefaultSetup = scenario({when:'The user accepts the defaults',then:'Every setup step finishes and OpenCode is available',check:async ({canvasElement})=>{const c=within(canvasElement);await userEvent.click(c.getByRole('button',{name:'Set up my Mac'}));await expect(await c.findByRole('button',{name:'Open OpenCode'})).toBeEnabled();}},{render:()=>view(initialSetup())});
+export const Docker = scenario({when:'The user chooses Docker',then:'The CPU-only tradeoff is visible and Docker is selected',check:async ({canvasElement})=>{const c=within(canvasElement);await userEvent.click(c.getByRole('radio',{name:/Docker Desktop/}));await expect(c.getByRole('radio',{name:/Docker Desktop/})).toBeChecked();await expect(c.getByText(/Docker runs llama.cpp on the CPU/)).toBeVisible();}},{render:()=>view(initialSetup())});
+export const Installing = scenario({when:'A model is downloading',then:'Completed steps are marked and duplicate setup is disabled',check:async ({canvasElement})=>{const c=within(canvasElement);await expect(c.getByRole('button',{name:'Setting up…'})).toBeDisabled();await expect(c.getByRole('radio',{name:/Podman/})).toBeDisabled();}},{render:()=>view({...initialSetup(),running:true,completed:['dependencies','machine'],current:'model'})});
+export const Retry = scenario({when:'The engine fails after the model downloaded',then:'Retry continues at the engine without repeating successful steps',check:async ({canvasElement})=>{const c=within(canvasElement);await userEvent.click(c.getByRole('button',{name:'Retry this step'}));await expect(await c.findByRole('button',{name:'Open OpenCode'})).toBeEnabled();}},{render:()=>view({...initialSetup(),completed:['dependencies','machine','model'],current:'engine',error:'Metal device unavailable. Check the runtime and retry.'},async step => {if(step !== 'engine' && step !== 'opencode') throw new Error('Repeated completed step');})});

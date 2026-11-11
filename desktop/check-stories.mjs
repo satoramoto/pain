@@ -20,5 +20,13 @@ try {
     await page.screenshot({path:`../.build/ui-checks/${renderer}-${state}.png`,fullPage:true});
     console.log(`PASS ${renderer}/${state}`);
   }
+  for (const state of ['welcome','installing','docker']) {
+    await page.setViewportSize({width:460,height:650});
+    await page.goto(`http://127.0.0.1:6016/iframe.html?id=help-getting-started--${state}&viewMode=story`);
+    await expect(page.getByRole('heading',{name:'Your Mac. Your models.'})).toBeVisible();
+    await page.screenshot({path:`../.build/ui-checks/onboarding-${state}.png`,fullPage:true});
+    if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) throw new Error('Onboarding overflows the window');
+    console.log(`PASS onboarding/${state} screenshot and narrow layout`);
+  }
   if(errors.length) throw new Error(errors.join('\n'));
 } finally {await browser.close();}

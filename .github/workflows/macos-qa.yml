@@ -17,6 +17,7 @@ jobs:
       - run: npm --prefix desktop ci
       - run: npm --prefix desktop run build
       - run: npm --prefix desktop run build-storybook
+      - run: npm --prefix desktop run test:stories -- --no-browser
   mac-runtime:
     needs: checks
     runs-on: macos-15
@@ -29,6 +30,7 @@ jobs:
         run: |
           brew install cmake meson ninja pkgconf libepoxy molten-vk
           brew tap slp/krun
+          brew trust slp/krun
           brew install slp/krun/krunkit
       - name: Build relocatable APIR and Metal runtime
         run: ./integrations/macos/build-runtime
