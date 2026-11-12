@@ -1,11 +1,11 @@
-import { each, h, iconNode, wire, type Node } from '@satoramoto/zen/view';
+import { component, each, h, iconNode, type ChildArg, type ComponentNode, type Node } from '@satoramoto/zen/view';
 import { clamp01, panelState } from '../../.build/pain-ui/model.mjs';
 import type { Status } from './panel';
 
 export interface Cursor { row: number; index: number }
 type GlyphName = 'brain' | 'refresh' | 'up' | 'down' | 'logs';
 
-function glyph(name: GlyphName): Node {
+export function glyph(name: GlyphName): Node {
   // The original glyph's outline anatomy, rendered through Zen's SVG primitive
   // so the Mac webview does not depend on an installed Nerd Font.
   const paths = name === 'brain' ? [
@@ -29,26 +29,34 @@ function meter(label: string, value: string, fraction: number, tone = 'normal', 
       h('span', { class: `meter-fill${pulsing ? ' pulsing' : ''}`, style: `width:${level * 100}%;min-width:${level > 0 ? 6 : 0}px` })));
 }
 
-// A real Zen view model: all dashboard HTML, SVG, geometry, and named actions
-// are rendered by @satoramoto/zen/view/react. Native QML keeps its original
-// rich controls while sharing the same Model.panelState presentation contract.
-export function dashboardView(status: Status, cursor: Cursor | null): Node {
+export function heroView(status: Status): Node {
+  const state = panelState(status, { platform: 'mac' });
+  return h('div', { class: `panel-hero${state.generating || state.busy ? ' hero-active' : ''}${!state.online && !state.busy ? ' hero-offline' : ''}` },
+    h('span', { class: 'hero-icon' }, glyph('brain')),
+    h('div', { class: 'hero-copy' },
+      h('div', { class: 'hero-title-row' }, h('h1', {}, 'PAIN'), state.detail ? h('span', { class: 'hero-badge', title: state.detail }, state.detail) : null),
+      h('p', { class: 'hero-meta', title: state.meta }, state.meta)));
+}
+
+// Use the actual Zen surface and labelled-group primitives. The visuals pack
+// supplies the frost and contrast floor; the app only places the telemetry.
+function section(name: string, aside: string, ...children: ChildArg[]): ComponentNode {
+  return component('Surface', { layer: 'raised', as: 'section', className: 'telemetry-section', 'aria-label': name }, {
+    slots: { children: [component('Group', { name, aside, direction: 'column', gap: 3, className: 'telemetry-group' }, { slots: { children } })] },
+  });
+}
+
+export function dashboardView(status: Status): Node {
   const state = panelState(status, { platform: 'mac' });
   const data = state.inference, memory = state.memory, hardware = state.hardware;
   const colors = ['var(--accent)', 'var(--draft)', 'var(--kv)', 'var(--system)'];
+  const host = status.telemetry_scope === 'macos-host' ? 'macOS host' : '';
   return h('div', { class: 'dashboard' },
-    h('header', { class: `panel-hero${state.generating || state.busy ? ' hero-active' : ''}${!state.online && !state.busy ? ' hero-offline' : ''}` },
-      h('span', { class: 'hero-icon' }, glyph('brain')),
-      h('div', { class: 'hero-copy' },
-        h('div', { class: 'hero-title-row' }, h('h1', {}, 'PAIN'), state.detail ? h('span', { class: 'hero-badge', title: state.detail }, state.detail) : null),
-        h('p', { class: 'hero-meta', title: state.meta }, state.meta)),
-      wire(h('button', { class: 'hero-refresh', 'aria-label': 'Refresh', title: 'Refresh (R)', disabled: status.busy ? '' : undefined }, glyph('refresh')), { on: { click: 'refresh' } })),
-
-    state.online ? h('section', { class: 'panel-section inference-section', 'aria-label': 'Inference' },
-      h('h2', {}, 'INFERENCE'), h('div', { class: 'info-rows' }, pair('Model', data.model), pair('Prompt', data.prompt), pair('Draft', data.draft), pair('Speed', data.speed)),
+    state.online ? section('Inference', state.generating ? 'Generating' : 'Ready',
+      h('div', { class: 'info-rows' }, pair('Model', data.model), pair('Prompt', data.prompt), pair('Draft', data.draft), pair('Speed', data.speed)),
       meter('Context', data.context, data.fraction, 'normal', state.generating)) : null,
 
-    h('section', { class: 'panel-section', 'aria-label': 'Memory' }, h('h2', {}, 'MEMORY'),
+    section('Memory', host,
       h('div', { class: 'ram-reading' }, pair('RAM', memory.ram),
         h('div', { class: 'stacked-meter', 'aria-label': `RAM ${memory.ram}` },
           h('div', { class: 'stacked-track' }, each(memory.segments, segment => segment.key, (segment, index) => h('span', { style: `width:${memory.total > 0 ? clamp01(segment.value / memory.total) * 100 : 0}%;background:${colors[index]}` }))),
@@ -56,21 +64,16 @@ export function dashboardView(status: Status, cursor: Cursor | null): Node {
         memory.segments.length > 0 ? h('div', { class: 'memory-legend' },
           memory.segments.map((segment, index) => segment.value > 0 || segment.key === 'sys' ? h('span', {}, h('i', { style: `background:${colors[index]}` }), `${segment.label} ${segment.value.toFixed(1)}`) : null),
           memory.gttCap > 0 ? h('span', {}, h('i', { class: 'legend-tick' }), memory.gttCaption) : null) : null),
-      meter('GTT', memory.gtt, memory.gttRatio, memory.gttRatio >= .9 ? 'urgent' : 'normal'), pair('Swap', memory.swap)),
+      memory.gttAvailable ? meter('GTT', memory.gtt, memory.gttRatio, memory.gttRatio >= .9 ? 'urgent' : 'normal') : pair('GPU allocation', 'Not reported'), pair('Swap', memory.swap)),
 
-    h('section', { class: 'panel-section', 'aria-label': 'APU' }, h('h2', {}, 'APU'),
-      meter('GPU', hardware.gpu, hardware.gpuFraction, hardware.gpuFraction >= .8 ? 'accent' : 'normal'), meter('Power', hardware.power, hardware.powerFraction), pair('Thermals', hardware.thermals)),
+    section('Compute', host,
+      meter('CPU', hardware.cpu, hardware.cpuFraction),
+      meter('GPU', hardware.gpu, hardware.gpuFraction, hardware.gpuFraction >= .8 ? 'accent' : 'normal'),
+      hardware.power === 'Unavailable' ? pair('Power', hardware.power) : meter('Power', hardware.power, hardware.powerFraction), pair('Thermals', hardware.thermals)),
 
-    h('section', { class: 'panel-section', 'aria-label': 'Backend' }, h('h2', {}, 'BACKEND'),
+    section('Engine', state.online ? 'Online' : 'Offline',
       h('div', { class: 'backend-chips' }, h('span', { class: 'backend-chip', title: 'Backend supplied by your selected container framework' }, status.backend || 'Not prepared')),
-      h('div', { class: 'action-row', style: `grid-template-columns:repeat(${state.actions.length}, minmax(0, 1fr))` }, each(state.actions, control => control.key, (control, index) =>
-        wire(h('button', { class: control.key === 'down' && state.online ? 'stop-action' : undefined, title: control.tip, disabled: control.enabled ? undefined : '', 'data-cursor': String(cursor?.row === 0 && cursor.index === index) }, glyph(control.key as GlyphName), control.label),
-          { on: { click: control.key, pointerenter: `cursor:0:${index}` } }))),
       status.error ? h('p', { class: 'control-caption control-error', role: 'alert' }, status.error)
         : h('p', { class: 'control-caption' }, `${state.online ? 'Restart replaces the running engine and interrupts requests. ' : ''}S start · D stop · G logs · R refresh`)),
-
-    h('nav', { class: 'panel-tools', 'aria-label': 'PAIN tools' },
-      wire(h('button', { 'data-cursor': String(cursor?.row === 1 && cursor.index === 0) }, 'Models'), { on: { click: 'models', pointerenter: 'cursor:1:0' } }),
-      wire(h('button', { 'data-cursor': String(cursor?.row === 1 && cursor.index === 1) }, 'Getting Started'), { on: { click: 'getting-started', pointerenter: 'cursor:1:1' } })),
   );
 }

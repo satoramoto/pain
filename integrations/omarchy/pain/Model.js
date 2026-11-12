@@ -88,6 +88,8 @@ function tempsText(hw) {
 }
 
 function swapText(swap) {
+  if (swap && swap.kind === "macos") return known(swap.used_gib) && known(swap.total_gib)
+    ? gibPair(swap.used_gib, swap.total_gib) + " · disk" : "Unavailable"
   if (!swap || num(swap.total_gib) <= 0) return "none"
   var parts = []
   if (num(swap.zram_total_gib) > 0) parts.push("zRAM " + num(swap.zram_used_gib).toFixed(1))
@@ -168,7 +170,9 @@ function panelState(status, host) {
     },
     memory: {
       available: memoryAvailable, ram: memoryAvailable ? gibPair(mem.used_gib, mem.total_gib) : "Unavailable",
-      total: num(mem.total_gib), segments: status.memory_split ? ramSegments(split, loaded) : [],
+      total: num(mem.total_gib), segments: status.memory_split ? ramSegments(split, loaded)
+        : memoryAvailable && known(mem.used_gib) ? [{key: "used", label: "Used", value: num(mem.used_gib)}] : [],
+      gttAvailable: gttAvailable,
       gtt: gttAvailable ? gibPair(hw.gtt_used_gib, hw.gtt_total_gib) : "Unavailable",
       gttRatio: known(split.gtt_ratio) ? clamp01(split.gtt_ratio) : gttAvailable ? clamp01(num(hw.gtt_used_gib) / hw.gtt_total_gib) : 0,
       gttCap: memoryAvailable && gttAvailable ? gttCapFraction(hw, mem) : -1,
@@ -176,6 +180,8 @@ function panelState(status, host) {
       swap: status.swap ? swapText(status.swap) : "Unavailable"
     },
     hardware: {
+      cpu: known(hw.cpu_busy_pct) ? Math.round(num(hw.cpu_busy_pct)) + "%" : "Unavailable",
+      cpuFraction: known(hw.cpu_busy_pct) ? clamp01(num(hw.cpu_busy_pct) / 100) : 0,
       gpu: known(hw.gpu_busy_pct) ? Math.round(num(hw.gpu_busy_pct)) + "%" : "Unavailable",
       gpuFraction: known(hw.gpu_busy_pct) ? clamp01(num(hw.gpu_busy_pct) / 100) : 0,
       power: known(hw.ppt_w) ? num(hw.ppt_w).toFixed(1) + " W" : "Unavailable",

@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod host_stats;
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -198,10 +199,7 @@ async fn models(app: tauri::AppHandle) -> Result<Value, String> {
         let text = run(&data.join("project"), &data, "ai", &["models", "--json"])?;
         let line = text.lines().rev().find(|line| line.starts_with('[')).ok_or("No model list.")?;
         let rows: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
-        let memory = Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok()
-            .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok())
-            .unwrap_or(0);
-        Ok(json!({"models": rows, "memory": memory}))
+        Ok(json!({"models": rows, "memoryCapacity": host_stats::memory_capacity()}))
     }).await.map_err(|e| e.to_string())?
 }
 #[tauri::command]
@@ -273,6 +271,9 @@ async fn snapshot(app: tauri::AppHandle) -> Result<Value, String> {
         let selected = framework(&data);
         let runtime_ready = if selected == "docker" { data.join("project/ai").exists() } else { data.join("runtime/current").exists() };
         let mut result = json!({"online":false,"backend":if selected == "docker" { "llamacpp-cpu" } else { "llamacpp-metal" },"engine":"llama.cpp","runtimeReady":runtime_ready,"modelsDir":models_dir(&data),"framework":selected,"onboarded":data.join("opencode.json").exists() && fs::read_to_string(data.join("onboarding.complete")).ok().as_deref() == Some(selected.as_str()),"model_alias":"","inference":{}});
+        if let Some(host) = app.state::<host_stats::Sampler>().snapshot().as_object() {
+            result.as_object_mut().unwrap().extend(host.clone());
+        }
         let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(2)).build().map_err(|e|e.to_string())?;
         let healthy = client.get("http://127.0.0.1:11434/health").send().map(|r|r.status().is_success()).unwrap_or(false);
         result["online"] = json!(healthy);
@@ -359,6 +360,7 @@ mod tests {
 fn main() {
     tauri::Builder::default()
         .manage(Operations(Mutex::new(())))
+        .manage(host_stats::Sampler::default())
         .invoke_handler(tauri::generate_handler![control, snapshot, onboarding_step, models])
         .setup(|app| {
             let directory = data(app.handle()).map_err(std::io::Error::other)?;

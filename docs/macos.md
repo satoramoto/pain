@@ -34,9 +34,15 @@ checks only validate the container and cross-platform application code.
 5. Use the menu-bar PAIN entry to reopen the window. Closing the window hides it;
    quitting the UI keeps inference running. Use **Stop** to stop inference.
 
-The tray reports inference state/context and measured generation speed. It does
-not present Linux VM memory statistics as Mac hardware telemetry. Model weights
+The tray reports inference state/context and measured generation speed. A native
+Mac adapter reads host RAM, swap, CPU tick deltas and driver-exposed GPU usage.
+CPU is unavailable until two samples exist. Power, temperatures and Linux GTT
+remain unavailable; Linux VM statistics are not substituted. Model weights
 are external persistent data, never part of the app bundle.
+
+The **Dashboard** and **Models** tabs share a pinned, aligned action toolbar.
+Mac uses Visual Flow's Zen theme, separated glass section surfaces and native
+macOS HUD-window vibrancy. The native Omarchy plugin retains its own styling.
 
 The separate **Models** view shows supported presets, download sizes and local
 availability. Use **Download** or **Resume** to fetch a preset and **Use** to
@@ -165,8 +171,9 @@ preserved rather than flattened into the kit's generic controls.
 
 The model manager is a separate shared Zen view. Guided setup, model-folder
 selection and downloads by URL stay outside the compact dashboard. Platform
-adapters supply status and execute actions; unavailable Mac hardware readings
-are identified instead of substituting Linux VM measurements.
+adapters supply status and execute actions. Mac hardware readings come from
+Mach, sysctl and IOKit; unsupported sensors are identified explicitly. Catalog
+memory capacity is separate from the live memory readings.
 
 `desktop/` contains the Tauri host and Storybook. Both renderer catalogs consume
 shared JSON fixtures. Tauri stories are interactive; Omarchy stories show native

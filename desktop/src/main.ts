@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { panel, type Status, type Action } from './panel';
 import { createElement as h, Fragment } from 'react';
 import { createRoot } from 'react-dom/client';
+import { ThemeFrame } from './theme';
 let status: Status = { online: false, backend: 'llamacpp-metal', engine: 'llama.cpp' };
 let busy = false;
 let logs = '';
@@ -26,20 +27,23 @@ function render() {
     }, framework => {setup = {...initialSetup(), framework}; render();}, () => {showSetup = false; render();}, () => {
       void invoke('onboarding_step', {step:'launch',selected:setup.framework}).catch(error => {setup.error = String(error);render();});
     });
-    app.render(h('div', { ref: (element: HTMLDivElement | null) => { element?.replaceChildren(screen); } }));
+    app.render(h(ThemeFrame, { children: h('div', { ref: (element: HTMLDivElement | null) => { element?.replaceChildren(screen); } }) }));
     return;
   }
   app.render(h(Fragment, null,
     panel(status, action),
-    logs ? h('pre', { className: 'engine-logs' }, logs) : null,
+    logs ? h(ThemeFrame, { children: h('pre', { className: 'engine-logs' }, logs) }) : null,
   ));
 }
 let modelsLoaded = false;
 // Listing models starts a short-lived controller container, so it is not part of the 5s poll.
 async function loadModels() {
   try {
-    const next = await invoke<Pick<Status, 'models' | 'memory'>>('models');
-    status = { ...status, ...next }; modelsLoaded = true;
+    const next = await invoke<{ models?: Status['models']; memoryCapacity?: number; memory?: number }>('models');
+    // Catalog capacity is a fit hint in bytes; snapshot.memory is live host
+    // telemetry. Never replace the latter with the catalog's numeric capacity.
+    status = { ...status, models: next.models, memoryCapacity: next.memoryCapacity ?? next.memory ?? status.memoryCapacity };
+    modelsLoaded = true;
   } catch { /* VM not running yet: keep the last list */ }
 }
 async function refresh() {
