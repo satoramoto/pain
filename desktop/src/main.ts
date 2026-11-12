@@ -57,7 +57,7 @@ async function refresh() {
 async function action(command: Action, value?: string) {
   if (busy) return;
   if (command === 'refresh') { await refresh(); return; }
-  const labels: Partial<Record<Action, string>> = { up: 'STARTING', use: 'SWITCHING', fetch: 'DOWNLOADING', download: 'DOWNLOADING' };
+  const labels: Partial<Record<Action, string>> = { up: 'STARTING', use: 'SWITCHING', fetch: 'DOWNLOADING', download: 'DOWNLOADING', folder: 'CHANGING FOLDER' };
   busy = true; status.busy = labels[command] || command.toUpperCase(); status.error = '';
   status.fetching = command === 'fetch' ? value : ''; render();
   try {
@@ -69,6 +69,8 @@ async function action(command: Action, value?: string) {
 }
 void listen('getting-started', () => {showSetup = true;render();});
 render(); void refresh(); setInterval(() => {
+  // A redraw replaces the form fields, so wait while one is being typed in.
+  if (document.activeElement instanceof HTMLInputElement) return;
   if (!busy && !showSetup) void refresh();
   else if (status.fetching) void loadModels().then(render);
 }, 5000);

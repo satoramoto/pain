@@ -4,10 +4,10 @@ export type Status = {
   online: boolean; backend: string; engine?: string; model_alias?: string;
   inference?: Record<string, number | boolean | null>; speed?: number;
   error?: string; busy?: string; runtimeReady?: boolean;
-  models?: Model[]; memory?: number; fetching?: string;
+  models?: Model[]; memory?: number; fetching?: string; modelsDir?: string;
 };
 export type Model = { id: string; title: string; downloaded: boolean; downloadable: boolean; bytes: number; received: number; selected: boolean };
-export type Action = 'setup' | 'up' | 'down' | 'logs' | 'refresh' | 'download' | 'use' | 'fetch';
+export type Action = 'setup' | 'up' | 'down' | 'logs' | 'refresh' | 'download' | 'use' | 'fetch' | 'folder';
 // Weights must fit in the memory macOS lets the GPU use, roughly 70% of RAM.
 const tooLarge = (model: Model, memory = 0) => !!memory && model.bytes > memory * 0.7;
 export function modelList(status: Status, action: (name: Action, value?: string) => void): HTMLElement {
@@ -71,6 +71,13 @@ export function panel(status: Status, action: (name: Action, value?: string) => 
   if (status.models?.length) root.append(label('small', 'MODELS'), modelList(status, action));
   root.append(label('small', 'ADD A MODEL BY URL'), form,
     label('p', 'Any HTTPS GGUF link. It appears in the list above; choose Use to load it.', 'hint'));
+  const folder = document.createElement('form');
+  const path = document.createElement('input'); path.required = true; path.value = status.modelsDir || '';
+  path.setAttribute('aria-label', 'Models folder');
+  const save = document.createElement('button'); save.textContent = 'Change folder'; save.disabled = !!status.busy;
+  folder.append(path, save); folder.onsubmit = event => { event.preventDefault(); action('folder', path.value); };
+  root.append(label('small', 'MODELS FOLDER'), folder,
+    label('p', 'Where model files are kept. Must be inside your home folder. Changing it stops the engine; files already downloaded stay in the old folder.', 'hint'));
   if (status.error) { const error = label('p', status.error, 'error'); error.setAttribute('role', 'alert'); root.append(error); }
   root.append(label('p', 'Localhost only · Metal through VirtGPU', 'footnote'));
   return root;

@@ -69,7 +69,9 @@ and passes that path to the same scripts. Neither writes global container config
 Keep checkout and model storage under your Mac home directory so Podman's host
 sharing exposes them at the same absolute paths inside the VM. Optional settings:
 
-- `PAIN_MODELS_DIR`: absolute Mac model directory (default `~/Models`).
+- `PAIN_MODELS_DIR`: absolute Mac model directory (default `~/Models`). The desktop app sets it from
+  its **Models folder** field, which accepts folders inside your home folder only, since the VM shares
+  just `/Users` with the Mac.
 - `PAIN_VM_CPUS`, `PAIN_VM_MEMORY`, `PAIN_VM_DISK`: creation-time settings (4,
   8192 MiB, 60 GiB). Existing machines are never silently resized/replaced.
 - `PAIN_PODMAN_CONNECTION`: use this named Podman connection instead of the

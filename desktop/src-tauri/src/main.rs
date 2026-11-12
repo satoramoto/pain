@@ -35,6 +35,7 @@ fn run(root: &Path, data: &Path, script: &str, args: &[&str]) -> Result<String, 
         .args(args)
         .env("PAIN_DATA_DIR", data)
         .env("PAIN_RUNTIME", framework(data))
+        .env("PAIN_MODELS_DIR", models_dir(data))
         .current_dir(root)
         .output()
         .map_err(|e| e.to_string())?;
@@ -47,6 +48,28 @@ fn run(root: &Path, data: &Path, script: &str, args: &[&str]) -> Result<String, 
         Ok(text)
     } else {
         Err(text)
+    }
+}
+/// Where model weights live: the folder chosen in the window, else ~/Models.
+fn models_dir(data: &Path) -> PathBuf {
+    match fs::read_to_string(data.join("models-dir")) {
+        Ok(text) if text.trim().starts_with('/') => PathBuf::from(text.trim()),
+        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Models"),
+    }
+}
+/// The VM shares only /Users with the Mac, so the folder must be inside it.
+fn models_folder(value: &str) -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let value = value.trim();
+    let path = match value.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(home).join(rest),
+        None => PathBuf::from(value),
+    };
+    let plain = path.components().all(|part| matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_)));
+    if plain && path.starts_with("/Users") && path.components().count() > 3 {
+        Ok(path)
+    } else {
+        Err("Choose a folder inside your home folder, for example ~/Models.".into())
     }
 }
 fn framework(data: &Path) -> String {
@@ -216,6 +239,14 @@ async fn control(app: tauri::AppHandle, command: String, value: String) -> Resul
                 }
                 Ok(started)
             }
+            "folder" => {
+                let folder = models_folder(&value)?;
+                fs::create_dir_all(&folder).map_err(|e| format!("Cannot use {}: {e}", folder.display()))?;
+                // The engine mounts the old folder; stop it before the setting changes.
+                let _ = run(&root, &data, "ai", &["down"]);
+                fs::write(data.join("models-dir"), folder.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+                Ok(String::new())
+            }
             "down" => run(&root, &data, "ai", &["down"]),
             "logs" => run(&root, &data, "ai", &["logs", "--once"]),
             "download" => {
@@ -236,7 +267,7 @@ async fn snapshot(app: tauri::AppHandle) -> Result<Value, String> {
         let data = data(&app)?;
         let selected = framework(&data);
         let runtime_ready = if selected == "docker" { data.join("project/ai").exists() } else { data.join("runtime/current").exists() };
-        let mut result = json!({"online":false,"backend":if selected == "docker" { "llamacpp-cpu" } else { "llamacpp-metal" },"engine":"llama.cpp","runtimeReady":runtime_ready,"framework":selected,"onboarded":data.join("opencode.json").exists() && fs::read_to_string(data.join("onboarding.complete")).ok().as_deref() == Some(selected.as_str()),"model_alias":"","inference":{}});
+        let mut result = json!({"online":false,"backend":if selected == "docker" { "llamacpp-cpu" } else { "llamacpp-metal" },"engine":"llama.cpp","runtimeReady":runtime_ready,"modelsDir":models_dir(&data),"framework":selected,"onboarded":data.join("opencode.json").exists() && fs::read_to_string(data.join("onboarding.complete")).ok().as_deref() == Some(selected.as_str()),"model_alias":"","inference":{}});
         let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(2)).build().map_err(|e|e.to_string())?;
         let healthy = client.get("http://127.0.0.1:11434/health").send().map(|r|r.status().is_success()).unwrap_or(false);
         result["online"] = json!(healthy);
