@@ -1,8 +1,16 @@
-:root { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-synthesis: none; }
+:root { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-synthesis: none; color-scheme: light dark; }
 * { box-sizing: border-box; }
 /* Match visual[flow]'s native page frame: ThemeScope's bleed removes padding,
    but its default surface tint must also yield to the macOS HUD background. */
 html, body, #app, #app > .lib-scope { margin: 0; background: transparent; }
+/* Zen's slim scrollbar recipe: a transparent track and an inset thumb. The
+   page uses system ink; nested logs inherit their current frost-mode ink. */
+html, .engine-logs { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, currentColor 38%, transparent) transparent; }
+:is(html, .engine-logs)::-webkit-scrollbar { width: 8px; height: 8px; }
+:is(html, .engine-logs)::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: color-mix(in srgb, currentColor 38%, transparent); background-clip: padding-box; }
+:is(html, .engine-logs)::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, currentColor 60%, transparent); background-clip: padding-box; }
+:is(html, .engine-logs)::-webkit-scrollbar-track,
+:is(html, .engine-logs)::-webkit-scrollbar-corner { background: transparent; }
 .pain-window {
   /* visual[flow]'s scope supplies the materials and palette. These aliases
      retain the shared panel's readout roles without introducing a second skin. */
