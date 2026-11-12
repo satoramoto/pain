@@ -6,6 +6,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 for tool in git cmake meson ninja pkg-config python3 krunkit; do
   command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 1; }
 done
+python3 -c 'import yaml' 2>/dev/null || { echo 'Missing build dependency: PyYAML for the python3 on PATH.' >&2; exit 1; }
 "$root/integrations/macos/build-metal-libraries"
 revision=$(cat "$root/integrations/macos/virgl-revision")
 work="$root/.build/virgl-$revision"

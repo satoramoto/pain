@@ -1,5 +1,7 @@
 # Official higher-quality dynamic Q4 build, text-only experiment.
 # Source: https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF
+# Download: https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/main/Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf 19653960832
+# Download: https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/main/dflash-Muse-Glimmer-30B-Q4_K_M.gguf 1631208128
 # 19,653,960,832 bytes of weights; projector not included.
 # llama.cpp also loads dflash-Muse-Glimmer-30B-Q4_K_M.gguf as the DFlash drafter.
 FROM /models/Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf

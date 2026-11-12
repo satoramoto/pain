@@ -127,10 +127,20 @@ def main():
     seeds = [(args.krunkit, Path('libexec/krunkit.real')),
              (args.virgl, Path('lib/libvirglrenderer.1.dylib'))]
     seeds += metal_seeds(args.metal)
+    # libkrun opens its guest kernel library by bare name at run time, so
+    # otool never lists it; without a copy a Mac without Homebrew cannot boot.
+    firmware_libraries = sorted(Path('/opt/homebrew/lib').glob('libkrunfw.[0-9]*.dylib'))
+    if not firmware_libraries:
+        raise RuntimeError('Missing libkrunfw in /opt/homebrew/lib')
+    seeds += [(p, Path('lib') / p.name) for p in firmware_libraries]
     bundle(args.output, seeds, [args.metal, args.virgl.parent, Path('/opt/homebrew/lib')],
            args.virgl, root / 'integrations/macos/krunkit-entitlements.plist')
     shutil.copy2(root / 'containers/virtgpu/llama-revision', args.output / 'llama-revision')
     shutil.copy2(root / 'integrations/macos/virgl-revision', args.output / 'virgl-revision')
+    # krunkit locates its EFI firmware relative to its own executable.
+    firmware = args.krunkit.resolve().parents[1] / 'share/krunkit/KRUN_EFI.silent.fd'
+    (args.output / 'share/krunkit').mkdir(parents=True)
+    shutil.copy2(firmware, args.output / 'share/krunkit/KRUN_EFI.silent.fd')
     (args.output / 'bin').mkdir()
     shutil.copy2(root / 'integrations/macos/krunkit-wrapper', args.output / 'bin/krunkit')
     (args.output / 'bin/krunkit').chmod(0o755)

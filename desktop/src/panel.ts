@@ -4,8 +4,40 @@ export type Status = {
   online: boolean; backend: string; engine?: string; model_alias?: string;
   inference?: Record<string, number | boolean | null>; speed?: number;
   error?: string; busy?: string; runtimeReady?: boolean;
+  models?: Model[]; memory?: number; fetching?: string;
 };
-export type Action = 'setup' | 'up' | 'down' | 'logs' | 'refresh' | 'download';
+export type Model = { id: string; title: string; downloaded: boolean; downloadable: boolean; bytes: number; received: number; selected: boolean };
+export type Action = 'setup' | 'up' | 'down' | 'logs' | 'refresh' | 'download' | 'use' | 'fetch';
+// Weights must fit in the memory macOS lets the GPU use, roughly 70% of RAM.
+const tooLarge = (model: Model, memory = 0) => !!memory && model.bytes > memory * 0.7;
+export function modelList(status: Status, action: (name: Action, value?: string) => void): HTMLElement {
+  const list = document.createElement('ul'); list.className = 'models';
+  for (const model of status.models || []) {
+    const running = status.online && status.model_alias === model.id;
+    const size = model.bytes ? `${(model.bytes / 1e9).toFixed(1)} GB` : '';
+    const progress = model.bytes ? Math.min(99, Math.floor(model.received * 100 / model.bytes)) : 0;
+    const state = running ? 'Running'
+      : model.downloaded ? 'Downloaded'
+      : status.fetching === model.id ? `Downloading… ${progress}%`
+      : tooLarge(model, status.memory) ? 'Too large for this Mac'
+      : !model.downloadable ? 'No download source'
+      : model.received ? `${progress}% downloaded` : 'Not downloaded';
+    const row = document.createElement('li'); if (running) row.className = 'running';
+    const text = document.createElement('div');
+    const name = document.createElement('b'); name.textContent = model.title;
+    const detail = document.createElement('small'); detail.textContent = [model.id, size, state].filter(Boolean).join(' · ');
+    text.append(name, detail); row.append(text);
+    const offer = model.downloaded ? (running ? '' : 'Use')
+      : model.downloadable && !tooLarge(model, status.memory) ? (model.received ? 'Resume' : 'Download') : '';
+    if (offer) {
+      const b = document.createElement('button'); b.textContent = offer; b.disabled = !!status.busy;
+      b.setAttribute('aria-label', `${offer} ${model.title}`);
+      b.onclick = () => action(model.downloaded ? 'use' : 'fetch', model.id); row.append(b);
+    }
+    list.append(row);
+  }
+  return list;
+}
 export function panel(status: Status, action: (name: Action, value?: string) => void): HTMLElement {
   const root = document.createElement('section'); root.className = 'panel';
   const label = (tag: string, text: string, cls = '') => {
@@ -36,8 +68,9 @@ export function panel(status: Status, action: (name: Action, value?: string) => 
   input.placeholder = 'https://…/model.gguf'; input.setAttribute('aria-label', 'Model GGUF URL');
   const submit = document.createElement('button'); submit.textContent = 'Download model'; submit.disabled = !!status.busy || !status.runtimeReady;
   form.append(input, submit); form.onsubmit = event => { event.preventDefault(); action('download', input.value); };
-  root.append(label('small', 'MODEL SETUP'), form,
-    label('p', 'Start with a small GGUF. Downloads create a 4k-context preset. Restart to load it.', 'hint'));
+  if (status.models?.length) root.append(label('small', 'MODELS'), modelList(status, action));
+  root.append(label('small', 'ADD A MODEL BY URL'), form,
+    label('p', 'Any HTTPS GGUF link. It appears in the list above; choose Use to load it.', 'hint'));
   if (status.error) { const error = label('p', status.error, 'error'); error.setAttribute('role', 'alert'); root.append(error); }
   root.append(label('p', 'Localhost only · Metal through VirtGPU', 'footnote'));
   return root;

@@ -29,7 +29,7 @@ checks only validate the container and cross-platform application code.
    the application's user data directory, creates `pain-metal` if missing, and
    starts it. The first machine setup requires internet access for the Linux image.
 4. Enter an HTTPS GGUF download URL for a small supported model. PAIN downloads
-   into `~/Models` and registers a 4096-token preset. Click **Start** afterward.
+   into `~/Models` and registers a 32768-token preset. Click **Start** afterward.
    The first start builds the controller and inference containers in the VM.
 5. Use the menu-bar PAIN entry to reopen the window. Closing the window hides it;
    quitting the UI keeps inference running. Use **Stop** to stop inference.
@@ -72,7 +72,8 @@ sharing exposes them at the same absolute paths inside the VM. Optional settings
 - `PAIN_MODELS_DIR`: absolute Mac model directory (default `~/Models`).
 - `PAIN_VM_CPUS`, `PAIN_VM_MEMORY`, `PAIN_VM_DISK`: creation-time settings (4,
   8192 MiB, 60 GiB). Existing machines are never silently resized/replaced.
-- `PAIN_PODMAN_CONNECTION`: connection name if yours differs from `pain-metal`.
+- `PAIN_PODMAN_CONNECTION`: use this named Podman connection instead of the
+  `pain-metal` VM's local API socket (the default, which avoids ssh).
 
 The controller image contains Python and the Compose provider. It uses the
 Podman VM socket to manage sibling containers, not nested virtualization. That
@@ -80,6 +81,11 @@ socket grants control over the dedicated VM's containers. The start script uses
 a scoped helper-binary config to select the bundled krunkit wrapper. The wrapper
 sets APIR loader variables immediately before exec, avoiding dependency on a
 terminal's inherited DYLD settings.
+
+APIR admits one guest process at a time. The Metal engine therefore serves one
+model as a single llama-server process, not the router used by other llama.cpp
+backends: the first `local-*` preset in `models.ini`, otherwise the first preset.
+`ai up llamacpp-metal` stops a running engine before probing.
 
 The APIR stack still uses upstream's Venus-capset routing workaround. This
 machine therefore isn't for ordinary Vulkan workloads. Although virglrenderer

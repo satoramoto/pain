@@ -48,6 +48,10 @@ jobs:
           brew tap slp/krun
           brew trust slp/krun
           brew install slp/krun/krunkit
+          # virglrenderer's Meson build imports PyYAML from the python3 on PATH.
+          python3 -m venv "$RUNNER_TEMP/build-python"
+          "$RUNNER_TEMP/build-python/bin/pip" install pyyaml
+          echo "$RUNNER_TEMP/build-python/bin" >> "$GITHUB_PATH"
       - name: Build relocatable APIR and Metal runtime
         run: ./integrations/macos/build-runtime
       - name: Notarize the private runtime

@@ -28,7 +28,16 @@ function render() {
   const help = document.createElement('button'); help.className='getting-started'; help.textContent='Getting Started'; help.onclick=()=>{showSetup=true;render();}; root.prepend(help);
   if (logs) { const pre = document.createElement('pre'); pre.textContent = logs; root.append(pre); }
 }
+let modelsLoaded = false;
+// Listing models starts a short-lived controller container, so it is not part of the 5s poll.
+async function loadModels() {
+  try {
+    const next = await invoke<Pick<Status, 'models' | 'memory'>>('models');
+    status = { ...status, ...next }; modelsLoaded = true;
+  } catch { /* VM not running yet: keep the last list */ }
+}
 async function refresh() {
+  if (!modelsLoaded && status.runtimeReady) await loadModels();
   try {
     const next = await invoke<Status & {framework: Framework; onboarded: boolean}>('snapshot');
     if (firstSnapshot) {
@@ -48,13 +57,18 @@ async function refresh() {
 async function action(command: Action, value?: string) {
   if (busy) return;
   if (command === 'refresh') { await refresh(); return; }
-  busy = true; status.busy = command === 'up' ? 'STARTING' : command.toUpperCase(); status.error = ''; render();
+  const labels: Partial<Record<Action, string>> = { up: 'STARTING', use: 'SWITCHING', fetch: 'DOWNLOADING', download: 'DOWNLOADING' };
+  busy = true; status.busy = labels[command] || command.toUpperCase(); status.error = '';
+  status.fetching = command === 'fetch' ? value : ''; render();
   try {
     const result = await invoke<string>('control', { command, value: value || '' });
-    status.busy = ''; await refresh();
+    status.busy = ''; status.fetching = ''; await loadModels(); await refresh();
     if (command === 'logs') { logs = result; render(); }
-  } catch (error) { status.error = String(error); status.busy = ''; render(); }
+  } catch (error) { status.error = String(error); status.busy = ''; status.fetching = ''; await loadModels(); render(); }
   finally { busy = false; }
 }
 void listen('getting-started', () => {showSetup = true;render();});
-render(); void refresh(); setInterval(() => { if (!busy && !showSetup) void refresh(); }, 5000);
+render(); void refresh(); setInterval(() => {
+  if (!busy && !showSetup) void refresh();
+  else if (status.fetching) void loadModels().then(render);
+}, 5000);

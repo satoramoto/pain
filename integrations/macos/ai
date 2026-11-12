@@ -22,19 +22,28 @@ fi
 [ "$framework" = podman ] || { echo 'Unsupported runtime.' >&2; exit 1; }
 pain_require_runtime
 # Select the dedicated machine connection, never alter the user's global default.
-connection=${PAIN_PODMAN_CONNECTION:-pain-metal}
+# Default to the VM's local API socket, not its ssh connection: Podman's ssh
+# client refuses to connect when ~/.ssh/known_hosts has any malformed line.
+if [ -n "${PAIN_PODMAN_CONNECTION:-}" ]; then
+  target="--connection=$PAIN_PODMAN_CONNECTION"
+else
+  api=$(podman machine inspect pain-metal --format '{{.ConnectionInfo.PodmanSocket.Path}}')
+  [ -S "$api" ] || { echo 'The PAIN VM is not running. Prepare the VM, then try again.' >&2; exit 1; }
+  target="--url=unix://$api"
+fi
 models=${PAIN_MODELS_DIR:-$HOME/Models}
 case "$models" in /*) ;; *) echo 'PAIN_MODELS_DIR must be an absolute Mac path.' >&2; exit 1 ;; esac
 mkdir -p "$models"
-socket=$(podman --connection "$connection" info --format '{{.Host.RemoteSocket.Path}}')
+socket=$(podman "$target" info --format '{{.Host.RemoteSocket.Path}}')
+socket=${socket#unix://}
 case "$socket" in /*) ;; *) echo 'Could not resolve the Podman VM socket.' >&2; exit 1 ;; esac
 image=localhost/pain-controller:dev
-if ! podman --connection "$connection" image exists "$image"; then
-  podman --connection "$connection" build -t "$image" "$root/containers/controller"
+if ! podman "$target" image exists "$image"; then
+  podman "$target" build -t "$image" "$root/containers/controller"
 fi
 # Same absolute paths on Mac, VM and controller make sibling bind mounts valid.
 # Host networking here means the Linux VM, where Compose publishes the engine.
-exec podman --connection "$connection" run --rm -i --network host \
+exec podman "$target" run --rm -i --network host \
   --security-opt label=disable \
   -v "$socket:/run/podman/podman.sock" \
   -v "$root:$root" -v "$models:$models" -w "$root" \

@@ -88,7 +88,7 @@ fn opencode_config(models: &Value, legacy: bool) -> Result<Value, String> {
         if let Some(id) = model["id"].as_str() {
             available.insert(
                 id.into(),
-                json!({"name":id,"limit":{"context":4096,"output":2048}}),
+                json!({"name":id,"limit":{"context":32768,"output":4096}}),
             );
         }
     }
@@ -137,18 +137,45 @@ async fn onboarding_step(
         if step == "machine" { prepare(&app, &data, &root)?; }
         let result = run(&root, &data, "onboarding", &[&step, &selected])?;
         if step == "opencode" {
-            let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e|e.to_string())?;
-            let models = client.get("http://127.0.0.1:11434/v1/models").send().map_err(|e|e.to_string())?.error_for_status().map_err(|e|e.to_string())?.json::<Value>().map_err(|e|e.to_string())?;
-            let version = result.lines().map(|line| line.trim().trim_start_matches('v')).find(|line| line.starts_with("1.") || line.starts_with("2.")).unwrap_or("");
-            if !version.starts_with("1.") && !version.starts_with("2.") { return Err("Unrecognized OpenCode version. Expected OpenCode 1 or 2.".into()); }
-            let config = opencode_config(&models, version.starts_with("1."))?;
-            let temp = data.join("opencode.json.tmp");
-            fs::write(&temp, serde_json::to_vec_pretty(&config).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-            fs::rename(temp, data.join("opencode.json")).map_err(|e|e.to_string())?;
+            write_opencode_config(&data, &result)?;
             fs::write(data.join("onboarding.complete"), &selected).map_err(|e|e.to_string())?;
         }
         Ok(result)
     }).await.map_err(|e|e.to_string())?
+}
+/// Point PAIN's private OpenCode config at whatever the engine serves now.
+/// `version_output` is what the onboarding `opencode` step printed.
+fn write_opencode_config(data: &Path, version_output: &str) -> Result<(), String> {
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e|e.to_string())?;
+    let models = client.get("http://127.0.0.1:11434/v1/models").send().map_err(|e|e.to_string())?.error_for_status().map_err(|e|e.to_string())?.json::<Value>().map_err(|e|e.to_string())?;
+    let version = version_output.split_whitespace().map(|word| word.trim_start_matches('v')).find(|line| line.starts_with("1.") || line.starts_with("2.")).unwrap_or("");
+    if !version.starts_with("1.") && !version.starts_with("2.") { return Err("Unrecognized OpenCode version. Expected OpenCode 1 or 2.".into()); }
+    let config = opencode_config(&models, version.starts_with("1."))?;
+    let temp = data.join("opencode.json.tmp");
+    fs::write(&temp, serde_json::to_vec_pretty(&config).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    fs::rename(temp, data.join("opencode.json")).map_err(|e|e.to_string())
+}
+fn preset_name(value: &str) -> Result<&str, String> {
+    if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+        Ok(value)
+    } else {
+        Err("Unknown model.".into())
+    }
+}
+/// Presets with download and selection state. Unlocked so the window can poll
+/// download progress while a download holds the operation lock.
+#[tauri::command]
+async fn models(app: tauri::AppHandle) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = data(&app)?;
+        let text = run(&data.join("project"), &data, "ai", &["models", "--json"])?;
+        let line = text.lines().rev().find(|line| line.starts_with('[')).ok_or("No model list.")?;
+        let rows: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+        let memory = Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok()
+            .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        Ok(json!({"models": rows, "memory": memory}))
+    }).await.map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn control(app: tauri::AppHandle, command: String, value: String) -> Result<String, String> {
@@ -178,6 +205,17 @@ async fn control(app: tauri::AppHandle, command: String, value: String) -> Resul
                     },
                 ],
             ),
+            "fetch" => run(&root, &data, "ai", &["pull", preset_name(&value)?]),
+            "use" => {
+                run(&root, &data, "ai", &["use", preset_name(&value)?])?;
+                let started = run(&root, &data, "ai", &["up", if framework(&data) == "docker" { "llamacpp-cpu" } else { "llamacpp-metal" }])?;
+                // The served model id changed, so OpenCode's private config must follow.
+                if data.join("opencode.json").exists() {
+                    let version = run(&root, &data, "onboarding", &["opencode", &framework(&data)])?;
+                    write_opencode_config(&data, &version)?;
+                }
+                Ok(started)
+            }
             "down" => run(&root, &data, "ai", &["down"]),
             "logs" => run(&root, &data, "ai", &["logs", "--once"]),
             "download" => {
@@ -228,7 +266,13 @@ async fn snapshot(app: tauri::AppHandle) -> Result<Value, String> {
     }).await.map_err(|e|e.to_string())?
 }
 fn loaded_model(models: &Value) -> Option<&str> {
-    models["data"].as_array()?.iter().find(|model| {
+    let entries = models["data"].as_array()?;
+    // A single-model server (the Metal backend) lists its one model with no load state.
+    let stateless = |model: &Value| model.get("status").is_none() && model.get("loaded").is_none();
+    if !entries.is_empty() && entries.iter().all(stateless) {
+        return entries[0]["id"].as_str();
+    }
+    entries.iter().find(|model| {
         model["loaded"] == true
             || model["status"] == "loaded"
             || model["status"]["value"] == "loaded"
@@ -274,7 +318,7 @@ mod tests {
 fn main() {
     tauri::Builder::default()
         .manage(Operations(Mutex::new(())))
-        .invoke_handler(tauri::generate_handler![control, snapshot, onboarding_step])
+        .invoke_handler(tauri::generate_handler![control, snapshot, onboarding_step, models])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Open PAIN", true, None::<&str>)?;
             let quit = MenuItem::with_id(

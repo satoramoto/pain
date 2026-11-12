@@ -1,4 +1,6 @@
+# Qwen3.8 27B (Q8_0) with three-token native MTP drafts
 # Current leader on Vulkan: batch 512 and three-token native MTP drafts.
+# Download: https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q8_0.gguf 29047086048
 FROM /models/Qwen3.8-27B-Q8_0.gguf
 PARAMETER num_ctx 65536
 PARAMETER num_batch 512

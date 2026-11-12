@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent
 STATE = ROOT / '.state' / 'backend'
 CONTAINER_STATE = ROOT / '.state' / 'container.json'
 RUNTIME_STATE = ROOT / '.state' / 'runtime'
+SELECTED = 'models.selected'  # in PAIN_MODELS_DIR; names the preset a single-model engine serves
 BACKENDS = ('rocm', 'vulkan', 'llamacpp-vulkan', 'llamacpp-cpu', 'llamacpp-metal')
 
 
@@ -126,7 +127,9 @@ def up(name):
         if runtime() != 'podman':
             raise ValueError('llamacpp-metal requires Podman with an APIR-enabled libkrun VM. See docs/macos.md.')
         compose('build', 'engine', selected=name)
-        # Probe the actual remoted device before replacing a working engine.
+        # APIR admits one guest process at a time, so a running engine must stop
+        # before the probe (and before its replacement) can reach the device.
+        compose('down', selected=name)
         compose('run', '-T', '--rm', '--no-deps', 'engine', '--pain-probe', selected=name)
     else:
         compose('pull', 'engine', selected=name)
@@ -199,6 +202,75 @@ def preset_ready(path):
     if source.startswith('/models/'):
         return (root / source[8:]).exists()
     return True
+
+
+def preset_downloads(path):
+    """[(url, bytes)] from '# Download: <https url> <bytes>' comment lines."""
+    found = []
+    for line in path.read_text().splitlines():
+        parts = line.split()
+        if parts[:2] == ['#', 'Download:'] and len(parts) > 2 and parts[2].startswith('https://'):
+            found.append((parts[2], int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0))
+    return found
+
+
+def preset_files(path):
+    """[(file in PAIN_MODELS_DIR, url or None, declared bytes)] a preset needs."""
+    root = models_dir()
+    downloads = preset_downloads(path)
+    if downloads:
+        return [(root / model_filename(urllib.parse.urlparse(url).path), url, size)
+                for url, size in downloads]
+    source = next((line.split(None, 1)[1].strip() for line in path.read_text().splitlines()
+                   if line.strip().startswith('FROM ')), '')
+    return [(root / source[8:], None, 0)] if source.startswith('/models/') else []
+
+
+def model_catalog():
+    """Every preset with what the desktop app needs to list, fetch and select it."""
+    marker = models_dir() / SELECTED
+    selected = marker.read_text().strip() if marker.exists() else ''
+    rows = []
+    for name, path in presets().items():
+        files = preset_files(path)
+        comment = next((line[1:].strip() for line in path.read_text().splitlines()
+                        if line.startswith('#')), '')
+        present = sum(f.stat().st_size for f, _, _ in files if f.exists())
+        partial = sum(p.stat().st_size for p in (f.with_name(f.name + '.part') for f, _, _ in files)
+                      if p.exists())
+        rows.append({
+            'id': name, 'title': comment or (files[0][0].name if files else name),
+            'downloaded': bool(files) and all(f.exists() for f, _, _ in files),
+            'downloadable': any(url for _, url, _ in files),
+            'bytes': sum(size or (f.stat().st_size if f.exists() else 0) for f, _, size in files),
+            'received': present + partial, 'selected': name == selected,
+        })
+    return rows
+
+
+def use_model(name):
+    row = next((row for row in model_catalog() if row['id'] == name), None)
+    if row is None:
+        raise ValueError(f'Unknown model preset: {name}')
+    if not row['downloaded']:
+        raise ValueError(f'{name} is not downloaded yet.')
+    (models_dir() / SELECTED).write_text(name + '\n')
+    print(f'Selected {name}. Restart the engine to load it.')
+
+
+def pull_preset(name):
+    files = preset_files(presets()[name])
+    missing = [(f, url, size) for f, url, size in files if url and not f.exists()]
+    partial = sum(p.stat().st_size for p in (f.with_name(f.name + '.part') for f, _, _ in missing)
+                  if p.exists())
+    needed = sum(size for _, _, size in missing) - partial
+    free = shutil.disk_usage(models_dir()).free
+    if needed > free:
+        raise ValueError(f'{name} needs {needed / 1e9:.1f} GB more disk space; '
+                         f'{free / 1e9:.1f} GB is free.')
+    for target, url, _ in missing:
+        download_file(url, target)
+    print(f'Downloaded {name}.')
 
 
 def generate_models_ini():
@@ -864,6 +936,10 @@ def main():
         sub.add_parser(name)
     p = sub.add_parser('logs', help='Show engine logs')
     p.add_argument('--once', action='store_true', help='Print recent logs without following')
+    p = sub.add_parser('models', help='List presets with download and selection state')
+    p.add_argument('--json', action='store_true')
+    p = sub.add_parser('use', help='Select the preset a single-model engine serves')
+    p.add_argument('preset')
     p = sub.add_parser('add-model', help='Download a GGUF and register a small-context local preset')
     p.add_argument('url')
     p = sub.add_parser('config', help='Render a backend Compose configuration')
@@ -943,8 +1019,21 @@ def main():
         name = hashlib.sha256(str(target).encode()).hexdigest()[:12]
         preset = ROOT / 'models' / f'local-{name}' / 'default.Modelfile'
         preset.parent.mkdir(parents=True, exist_ok=True)
-        preset.write_text(f'FROM /models/{target.name}\nPARAMETER num_ctx 4096\n')
+        # A coding agent's system prompt alone is about 10k tokens.
+        preset.write_text(f'FROM /models/{target.name}\nPARAMETER num_ctx 32768\n')
         print(f'Added local-{name}-default. Restart the engine to load it.')
+    elif args.command == 'models':
+        rows = model_catalog()
+        if args.json:
+            print(json.dumps(rows))
+        else:
+            for row in rows:
+                state = 'selected' if row['selected'] else 'ready' if row['downloaded'] else 'missing'
+                print(f"{row['id']:40} {state:9} {row['bytes'] / 1e9:6.1f} GB")
+    elif args.command == 'use':
+        use_model(args.preset)
+    elif args.command == 'pull' and args.source in presets() and preset_downloads(presets()[args.source]):
+        pull_preset(args.source)
     elif args.command == 'pull':
         pull(args.source, name=args.name, sha256=args.sha256, force=args.force)
     elif args.command == 'run':

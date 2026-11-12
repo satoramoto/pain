@@ -1,5 +1,6 @@
 # NVIDIA Nemotron 3.5 Lightning 30B-A3B (Q8_0, 3B active parameters)
 # Source: https://huggingface.co/unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF
+# Download: https://huggingface.co/unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF/resolve/main/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q8_0.gguf 35004643392
 # 35,004,643,392 bytes of weights (~32.6 GiB); built for always-on agent loops.
 # Fetch into PAIN_MODELS_DIR before restarting; the router skips missing files.
 FROM /models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q8_0.gguf

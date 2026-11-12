@@ -50,7 +50,7 @@ class RuntimeTests(unittest.TestCase):
                         pain.compose(command)
                 run.assert_not_called()
 
-    def test_failed_metal_probe_preserves_running_engine(self):
+    def test_failed_metal_probe_never_starts_engine(self):
         def compose(*args, **kwargs):
             if args[0] == 'run':
                 raise subprocess.CalledProcessError(1, args)
@@ -60,7 +60,7 @@ class RuntimeTests(unittest.TestCase):
              patch.object(pain, 'generate_models_ini') as presets:
             with self.assertRaises(subprocess.CalledProcessError):
                 pain.up('llamacpp-metal')
-            self.assertEqual([call.args[0] for call in calls.call_args_list], ['config', 'build', 'run'])
+            self.assertEqual([call.args[0] for call in calls.call_args_list], ['config', 'build', 'down', 'run'])
             presets.assert_not_called()
 
     def test_metal_rejects_docker_before_building(self):
@@ -131,7 +131,7 @@ class DesktopCommandTests(unittest.TestCase):
                 pain.main()
             presets=list(root.glob('models/local-*/default.Modelfile'))
             self.assertEqual(len(presets),1)
-            self.assertEqual(presets[0].read_text(),'FROM /models/tiny.gguf\nPARAMETER num_ctx 4096\n')
+            self.assertEqual(presets[0].read_text(),'FROM /models/tiny.gguf\nPARAMETER num_ctx 32768\n')
 
     def test_snapshot_logs_do_not_follow(self):
         with patch.object(pain.sys, 'argv', ['ai','logs','--once']), patch.object(pain,'compose') as compose:
