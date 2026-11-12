@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import tempfile
+import os
 import unittest
 from unittest.mock import patch
 
@@ -28,3 +29,31 @@ class BundleTests(unittest.TestCase):
             with patch.object(bundle,'output',return_value='x86_64'):
                 with self.assertRaisesRegex(RuntimeError,'Not an ARM64'):
                     bundle.bundle(root/'runtime',[(binary,Path('libexec/krunkit.real'))],[],root/'virgl',root/'entitlements')
+
+    def test_developer_id_signing_preserves_hypervisor_entitlement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); binary = root/'krunkit'; binary.write_bytes(b'fake')
+            def tool(*args):
+                return 'arm64' if args[0] == 'lipo' else 'binary:\n'
+            with patch.dict(os.environ, {'APPLE_SIGNING_IDENTITY':'Developer ID Application: Test'}), patch.object(bundle, 'output', side_effect=tool), patch.object(bundle.subprocess, 'run') as run:
+                bundle.bundle(root/'runtime', [(binary, Path('libexec/krunkit.real'))], [], root/'virgl', root/'entitlements')
+            signing = next(call.args[0] for call in run.call_args_list if '--sign' in call.args[0])
+            self.assertIn('Developer ID Application: Test', signing)
+            self.assertIn('--timestamp', signing)
+            self.assertIn('runtime', signing)
+            self.assertIn('--entitlements', signing)
+
+    def test_cmake_modules_get_apir_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('ggml-metal', 'ggml-virtgpu-backend'):
+                (root/f'lib{name}.so').touch()
+            targets = {str(target) for _, target in bundle.metal_seeds(root)}
+            self.assertIn('lib/libggml-metal.dylib', targets)
+            self.assertIn('lib/libggml-virtgpu-backend.dylib', targets)
+            self.assertIn('lib/libggml-metal.so', targets)
+
+    def test_missing_metal_module_fails_before_packaging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, 'Missing required runtime module'):
+                bundle.metal_seeds(Path(directory))

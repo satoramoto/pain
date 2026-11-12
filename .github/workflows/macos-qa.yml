@@ -3,6 +3,11 @@ on:
   push:
     branches: ['fix/mac-virtgpu']
   workflow_dispatch:
+    inputs:
+      signed:
+        description: Require Developer ID signing and notarization
+        type: boolean
+        default: true
 permissions:
   contents: read
 jobs:
@@ -24,6 +29,17 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      # Adapted from openflowfm/visuals: temporary keychain + App Store Connect API.
+      - name: Prepare signing
+        id: signing
+        env:
+          REQUIRE_SIGNING: ${{ github.event_name == 'workflow_dispatch' && inputs.signed }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/ci/macos-signing.sh prepare
       - name: Check Apple Silicon builder
         run: test "$(uname -m)" = arm64
       - name: Install build dependencies on CI only
@@ -34,10 +50,16 @@ jobs:
           brew install slp/krun/krunkit
       - name: Build relocatable APIR and Metal runtime
         run: ./integrations/macos/build-runtime
+      - name: Notarize the private runtime
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/ci/macos-signing.sh runtime
       - name: Upload runtime and checksum
         uses: actions/upload-artifact@v4
         with:
-          name: pain-macos-runtime-arm64
+          name: pain-macos-runtime-arm64-${{ steps.signing.outputs.signed == 'true' && 'signed' || 'unsigned' }}
           path: |
             .build/pain-macos-runtime-arm64.tar.gz
             .build/pain-macos-runtime-arm64.tar.gz.sha256
@@ -54,10 +76,25 @@ jobs:
         run: npm --prefix desktop run stage
       - name: Build Tauri Mac application
         working-directory: desktop
-        run: npm run tauri build -- --target aarch64-apple-darwin
+        env:
+          SIGNED_BUILD: ${{ steps.signing.outputs.signed }}
+          APPLE_API_KEY: ${{ steps.signing.outputs.signed == 'true' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ steps.signing.outputs.signed == 'true' && secrets.APPLE_API_ISSUER || '' }}
+        run: |
+          if [ "$SIGNED_BUILD" != true ]; then unset APPLE_API_KEY APPLE_API_ISSUER; fi
+          npm run tauri build -- --target aarch64-apple-darwin
+      - name: Notarize and verify the disk image
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/ci/macos-signing.sh verify
       - name: Upload Mac application
         uses: actions/upload-artifact@v4
         with:
-          name: pain-macos-app-arm64
+          name: pain-macos-app-arm64-${{ steps.signing.outputs.signed == 'true' && 'signed' || 'unsigned' }}
           path: desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
+      - name: Remove signing credentials
+        if: always()
+        run: bash scripts/ci/macos-signing.sh cleanup

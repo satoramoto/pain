@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Copy the Mach-O dependency closure, rewrite loader paths, then ad-hoc sign.
+"""Copy the Mach-O dependency closure, rewrite loader paths, then sign for distribution (or ad-hoc QA).
 
 Build-machine tool only; the installed runtime does not need Python or Homebrew.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -81,19 +82,38 @@ def bundle(destination, seeds, search, virgl, entitlements):
             add(resolved, dep_target)
             relative = '@loader_path/' + ('../lib/' if target.parent.name == 'libexec' else '') + dep_target.name
             subprocess.run(['install_name_tool', '-change', dep, relative, str(dest)], check=True)
-        if target.suffix == '.dylib':
+        if target.suffix == '.dylib' and source.suffix != '.so':
             subprocess.run(['install_name_tool', '-id', '@loader_path/' + target.name, str(dest)], check=True)
     # Reject any dependency on the builder's Homebrew or checkout.
     for target in copied:
         for dep in dependencies(destination / target):
             if not system_library(dep) and not dep.startswith('@loader_path/'):
                 raise RuntimeError(f'Nonportable dependency {dep} in {target}')
-        command = ['codesign', '--force', '--sign', '-']
+        identity = os.environ.get('APPLE_SIGNING_IDENTITY') or '-'
+        command = ['codesign', '--force', '--sign', identity]
+        if identity != '-':
+            command += ['--timestamp', '--options', 'runtime']
         if target.name == 'krunkit.real':
             command += ['--entitlements', str(entitlements)]
         subprocess.run([*command, str(destination / target)], check=True)
         subprocess.run(['codesign', '--verify', '--strict', str(destination / target)], check=True)
     (destination / 'build-origins.json').write_text(json.dumps(origins, indent=2) + '\n')
+
+
+def metal_seeds(directory):
+    # Preserve library filenames including aliases needed by dlopen.
+    seeds = [(p, Path('lib') / p.name) for p in directory.glob('*.dylib')]
+    # CMake MODULE targets are Mach-O .so files even on macOS. APIR's
+    # explicit library paths use stable .dylib names; keep the .so aliases too.
+    for name in ('ggml-metal', 'ggml-virtgpu-backend'):
+        dylib = directory / f'lib{name}.dylib'
+        module = directory / f'lib{name}.so'
+        if not dylib.exists():
+            if not module.exists():
+                raise RuntimeError(f'Missing required runtime module: {name}')
+            seeds += [(module, Path('lib') / module.name),
+                      (module, Path('lib') / dylib.name)]
+    return seeds
 
 
 def main():
@@ -106,8 +126,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     seeds = [(args.krunkit, Path('libexec/krunkit.real')),
              (args.virgl, Path('lib/libvirglrenderer.1.dylib'))]
-    # Preserve library filenames including aliases needed by dlopen.
-    seeds += [(p, Path('lib') / p.name) for p in args.metal.glob('*.dylib')]
+    seeds += metal_seeds(args.metal)
     bundle(args.output, seeds, [args.metal, args.virgl.parent, Path('/opt/homebrew/lib')],
            args.virgl, root / 'integrations/macos/krunkit-entitlements.plist')
     shutil.copy2(root / 'containers/virtgpu/llama-revision', args.output / 'llama-revision')

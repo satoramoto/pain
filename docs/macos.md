@@ -180,3 +180,35 @@ home directory; navigate to your project when using OpenCode.
 - Run `npm --prefix desktop run test:stories -- --no-browser` for the virtual DOM
   plays, and `-- --browser-all` against the shared preview for all renderers.
   `check:stories` also captures the screen at 460 px and checks overflow.
+
+## Signing on GitHub Actions
+
+The Mac QA workflow follows OpenFlow's Tauri template
+(`openflowfm/visuals/.github/workflows/release.yml`). Add these repository secrets
+in **satoramoto/pain → Settings → Secrets and variables → Actions**:
+
+| Secret | Value from OpenFlow |
+| --- | --- |
+| `MACOS_CERTIFICATE` | Base64 Developer ID Application `.p12`, including its private key |
+| `MACOS_CERTIFICATE_PASSWORD` | Password for that `.p12` |
+| `APPLE_API_KEY_P8` | Base64 App Store Connect API `.p8` key |
+| `APPLE_API_KEY_ID` | Key ID |
+| `APPLE_API_ISSUER` | Issuer ID |
+
+The certificate is imported into a temporary runner keychain. The bundled
+Mach-O libraries and VM helper are signed with the same identity as the app;
+the helper retains its hypervisor entitlement. The runtime is submitted
+separately for notarization because it is extracted outside the app. Tauri
+signs/notarizes the app; CI also signs, notarizes and staples the DMG and checks
+both app and image with Gatekeeper. Credentials are removed in an `always()` step.
+
+Pushes use signing once all five secrets are set. With no secrets, artifacts
+are explicitly named `*-unsigned`; partially configured signing fails. Manual
+Mac QA runs default to requiring signing, so missing secrets fail instead of
+silently producing unsigned software. No Tauri updater key is needed: this
+workflow distributes the DMG, without an automatic updater.
+
+After copying the secrets, rerun the latest Mac QA run on `fix/mac-virtgpu`.
+Once this workflow is on the default branch, manual dispatch is also available
+with `signed=true`.
+The signed path still needs its first successful remote run with your credentials.

@@ -13,7 +13,15 @@ if [ ! -d "$work/src" ]; then
   mkdir -p "$work"
   git init "$work/src"
   git -C "$work/src" remote add origin https://gitlab.freedesktop.org/kpouget/virglrenderer.git
-  git -C "$work/src" fetch --depth 1 origin "$revision"
+fi
+# A failed fetch must be retryable even when the source directory already exists.
+if [ "$(git -C "$work/src" rev-parse HEAD 2>/dev/null || true)" != "$revision" ]; then
+  attempt=0
+  until git -C "$work/src" fetch --depth 1 origin "$revision"; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 4 ] || { echo 'Virgl source fetch failed after four attempts.' >&2; exit 1; }
+    sleep "$((attempt * 5))"
+  done
   git -C "$work/src" checkout --detach FETCH_HEAD
 fi
 [ "$(git -C "$work/src" rev-parse HEAD)" = "$revision" ] || { echo 'Virgl source mismatch.' >&2; exit 1; }
