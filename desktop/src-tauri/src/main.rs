@@ -400,8 +400,8 @@ fn main() {
             });
             let menu = Menu::with_items(app, &[&show, &getting_started, &quit])?;
             TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
-                .title("PAIN")
+                .icon(tauri::include_image!("./icons/tray-brain.png"))
+                .icon_as_template(true)
                 .tooltip("Private AI Network")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {

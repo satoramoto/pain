@@ -1,6 +1,8 @@
 :root { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-synthesis: none; }
 * { box-sizing: border-box; }
-html, body, #app { margin: 0; background: transparent; }
+/* Match visual[flow]'s native page frame: ThemeScope's bleed removes padding,
+   but its default surface tint must also yield to the macOS HUD background. */
+html, body, #app, #app > .lib-scope { margin: 0; background: transparent; }
 .pain-window {
   /* visual[flow]'s scope supplies the materials and palette. These aliases
      retain the shared panel's readout roles without introducing a second skin. */
