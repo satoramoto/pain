@@ -1,13 +1,13 @@
 import { listen } from '@tauri-apps/api/event';
 import { initialSetup, onboarding, runSetup, type Framework } from './onboarding';
 import { invoke } from '@tauri-apps/api/core';
-import { panel, type Status, type Action } from './panel';
-import { createElement as h, Fragment } from 'react';
+import { panel, type Status, type Action, type LogsState } from './panel';
+import { createElement as h } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ThemeFrame } from './theme';
 let status: Status = { online: false, backend: 'llamacpp-metal', engine: 'llama.cpp' };
 let busy = false;
-let logs = '';
+let logs: LogsState = { state: 'idle', content: '', error: '' };
 let controlError = '';
 let sampledAt = 0;
 let decoded = 0;
@@ -30,10 +30,7 @@ function render() {
     app.render(h(ThemeFrame, { children: h('div', { ref: (element: HTMLDivElement | null) => { element?.replaceChildren(screen); } }) }));
     return;
   }
-  app.render(h(Fragment, null,
-    panel(status, action),
-    logs ? h(ThemeFrame, { children: h('pre', { className: 'engine-logs' }, logs) }) : null,
-  ));
+  app.render(panel(status, action, logs));
 }
 let modelsLoaded = false;
 // Listing models starts a short-lived controller container, so it is not part of the 5s poll.
@@ -65,17 +62,28 @@ async function refresh() {
   catch (error) { status = { ...status, online: false, error: String(error) }; }
   render();
 }
+// A bounded log read has its own request state. Polling and engine operations
+// must neither clear its result/error nor wait for it to finish.
+async function loadLogs() {
+  if (logs.state === 'loading') return;
+  logs = { ...logs, state: 'loading', error: '' }; render();
+  try {
+    const content = await invoke<string>('control', { command: 'logs', value: '' });
+    logs = { state: 'ready', content, error: '' };
+  } catch (error) { logs = { ...logs, state: 'error', error: String(error) }; }
+  render();
+}
 async function action(command: Action, value?: string) {
   if (command === 'getting-started') { showSetup = true; render(); return; }
+  if (command === 'logs') { await loadLogs(); return; }
   if (busy) return;
   if (command === 'refresh') { modelsLoaded = false; await refresh(); return; }
   const labels: Partial<Record<Action, string>> = { up: 'STARTING', use: 'SWITCHING', fetch: 'DOWNLOADING', download: 'DOWNLOADING', folder: 'CHANGING FOLDER', remove: 'REMOVING' };
   busy = true; controlError = ''; status.busy = labels[command] || command.toUpperCase(); status.error = '';
   status.fetching = command === 'fetch' ? value : ''; render();
   try {
-    const result = await invoke<string>('control', { command, value: value || '' });
+    await invoke<string>('control', { command, value: value || '' });
     status.busy = ''; status.fetching = ''; modelsLoaded = false; await refresh();
-    if (command === 'logs') { logs = result; render(); }
   } catch (error) { controlError = String(error); status.error = controlError; status.busy = ''; status.fetching = ''; await loadModels(); render(); }
   finally { busy = false; }
 }

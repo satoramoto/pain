@@ -24,9 +24,11 @@ export type Model = {
   bytes: number; received: number; selected: boolean; removable?: boolean; remove_blocked?: string;
 };
 export type Action = 'getting-started' | 'setup' | 'up' | 'down' | 'logs' | 'refresh' | 'download' | 'use' | 'fetch' | 'folder' | 'remove';
+export type LogsState = { state: 'idle' | 'loading' | 'ready' | 'error'; content: string; error: string };
+const initialLogs: LogsState = { state: 'idle', content: '', error: '' };
 type Act = (name: Action, value?: string) => void;
-type Screen = 'dashboard' | 'models';
-const tabs = [{ id: 'dashboard', label: 'Dashboard' }, { id: 'models', label: 'Models' }];
+type Screen = 'dashboard' | 'models' | 'logs';
+const tabs = [{ id: 'dashboard', label: 'Dashboard' }, { id: 'models', label: 'Models' }, { id: 'logs', label: 'Logs' }];
 
 // The portable manager inherits the same real Zen scope as the dashboard.
 const managerTheme = themeOf({ background: 'transparent', foreground: 'var(--text-1)', muted: 'var(--text-3)', accent: 'var(--accent)', urgent: 'var(--danger)', font: 'var(--font-sans)', size: 13, small: 12, gap: 12, rowGap: 8, padding: 0, radius: 8 });
@@ -39,7 +41,7 @@ function managerContent(node: Element): Element | null {
   return node.kind === 'row' && !children.length ? null : { ...node, children };
 }
 
-function Panel({ status, action }: { status: Status; action: Act }) {
+function Panel({ status, action, logs }: { status: Status; action: Act; logs: LogsState }) {
   const [screen, setScreen] = useState<Screen>('dashboard');
   const [removeId, setRemoveId] = useState('');
   const [url, setUrl] = useState('');
@@ -56,11 +58,13 @@ function Panel({ status, action }: { status: Status; action: Act }) {
   }, [removeId, status.models]);
   useEffect(() => { if (removeId) root.current?.querySelector<HTMLButtonElement>('[data-om-action="cancel-remove"]')?.focus(); }, [removeId]);
 
-  const navigate = (next: string) => {
-    if (next !== 'dashboard' && next !== 'models') return;
+  const navigate = (next: string, refreshLogs = false) => {
+    if (next !== 'dashboard' && next !== 'models' && next !== 'logs') return;
     setRemoveId(''); setScreen(next);
     if (next === 'models') action('refresh');
+    if (next === 'logs' && (refreshLogs || logs.state === 'idle')) action('logs');
   };
+  const runControl = (name: Action) => name === 'logs' ? navigate('logs', true) : action(name);
   const dispatch = (name: string, payload?: unknown) => {
     const id = typeof payload === 'string' ? payload : '';
     if (name === 'cancel-remove') { setRemoveId(''); return; }
@@ -74,19 +78,21 @@ function Panel({ status, action }: { status: Status; action: Act }) {
     if (['use', 'fetch'].includes(name)) action(name as Action, id);
   };
   const activate = (row: number, index: number) => {
-    if (row === 1) { navigate(index === 0 ? 'dashboard' : 'models'); root.current?.querySelector<HTMLButtonElement>(`#tabs-pain-${index === 0 ? 'dashboard' : 'models'}`)?.focus(); }
+    if (row === 1) { const tab = tabs[index]; if (tab) { navigate(tab.id); root.current?.querySelector<HTMLButtonElement>(`#tabs-pain-${tab.id}`)?.focus(); } }
     else if (index === state.actions.length) { if (!status.busy) action('refresh'); }
-    else { const control = state.actions[index]; if (control?.enabled) action(control.key as Action); }
+    else { const control = state.actions[index]; if (control && (control.key === 'logs' || control.enabled)) runControl(control.key as Action); }
   };
   const handleKey = (event: KeyboardEvent<HTMLElement>) => {
     const target = event.target as HTMLElement;
-    if (event.defaultPrevented || target.closest('input, textarea, select, [role="tablist"]')) return;
-    if (event.key === 'Escape' && screen === 'models') {
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || target.closest('input, textarea, select')) return;
+    if (event.key.toLowerCase() === 'g') { event.preventDefault(); navigate('logs', true); return; }
+    if (target.closest('[role="tablist"]')) return;
+    if (event.key === 'Escape' && screen !== 'dashboard') {
       event.preventDefault();
       if (removeId) setRemoveId(''); else { navigate('dashboard'); root.current?.querySelector<HTMLButtonElement>('#tabs-pain-dashboard')?.focus(); }
       return;
     }
-    if (screen !== 'dashboard' || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (screen !== 'dashboard') return;
     const key = event.key.toLowerCase();
     const shortcut: Record<string, Action> = { s: 'up', d: 'down', g: 'logs', r: 'refresh' };
     if (shortcut[key]) {
@@ -98,7 +104,7 @@ function Panel({ status, action }: { status: Status; action: Act }) {
       const dy = ['arrowdown', 'j'].includes(key) ? 1 : ['arrowup', 'k'].includes(key) ? -1 : 0;
       const dx = ['arrowright', 'l'].includes(key) ? 1 : ['arrowleft', 'h'].includes(key) ? -1 : 0;
       const row = Math.max(0, Math.min(1, cursor.row + dy));
-      setCursor({ row, index: Math.max(0, Math.min((row === 0 ? state.actions.length + 1 : 2) - 1, cursor.index + dx)) });
+      setCursor({ row, index: Math.max(0, Math.min((row === 0 ? state.actions.length + 1 : tabs.length) - 1, cursor.index + dx)) });
     } else if (key === 'enter' && cursor && !(event.target instanceof HTMLButtonElement)) {
       event.preventDefault(); activate(cursor.row, cursor.index);
     }
@@ -117,10 +123,10 @@ function Panel({ status, action }: { status: Status; action: Act }) {
       </div>
       <Group name="Engine controls" label={false} toolbar className="engine-toolbar">
         {state.actions.map((control, index) => <span className="toolbar-action" key={control.key} data-cursor={cursor?.row === 0 && cursor.index === index} onPointerEnter={() => setCursor({ row: 0, index })}>
-          <Button label={control.label} title={control.tip} size="cell" variant="quiet" hue={control.key === 'down' ? 'rec' : 't'} disabled={!control.enabled} icon={<Tree tree={glyph(control.key as 'up' | 'down' | 'logs')} />} onPress={() => action(control.key as Action)} />
+          <Button label={control.label} title={control.key === 'logs' ? 'Open and refresh engine logs (G)' : control.tip} size="cell" variant={control.key === 'up' ? 'primary' : 'secondary'} hue={control.key === 'down' ? 'rec' : 't'} disabled={control.key !== 'logs' && !control.enabled} icon={<Tree tree={glyph(control.key as 'up' | 'down' | 'logs')} />} onPress={() => runControl(control.key as Action)} />
         </span>)}
         <span className="toolbar-action" data-cursor={cursor?.row === 0 && cursor.index === state.actions.length} onPointerEnter={() => setCursor({ row: 0, index: state.actions.length })}>
-          <Button label="Refresh" title="Refresh (R)" size="cell" variant="quiet" disabled={disabled} icon={<Tree tree={glyph('refresh')} />} onPress={() => action('refresh')} />
+          <Button label="Refresh" title="Refresh status (R)" size="cell" variant="secondary" disabled={disabled} icon={<Tree tree={glyph('refresh')} />} onPress={() => action('refresh')} />
         </span>
       </Group>
     </Surface>
@@ -140,9 +146,23 @@ function Panel({ status, action }: { status: Status; action: Act }) {
             <p className="hint">Inside your home folder. Changing it stops the engine; downloaded files stay in the old folder.</p>
           </form>
         </Group></Surface>
+      </div> : screen === 'logs' ? <div className="logs-content">
+        <Surface as="section" layer="raised" className="logs-section" aria-label="Engine logs">
+          <Group name="Engine logs" direction="column" gap={3} aside={<Button label="Refresh logs" size="md" variant="secondary" disabled={logs.state === 'loading'} icon={<Tree tree={glyph('refresh')} />} onPress={() => action('logs')} />}>
+            <p className="hint">Recent engine output. Refresh to read the latest lines.</p>
+            {logs.state === 'loading' && <p className="logs-state" role="status">Loading logs…</p>}
+            {logs.state === 'error' && <div className="logs-error" role="alert"><strong>Unable to read engine logs.</strong><p>{logs.error}</p></div>}
+            {logs.state === 'ready' && !logs.content.trim() && <p className="logs-state" role="status">No engine log output yet.</p>}
+            {logs.state === 'idle' && <p className="logs-state">Choose Refresh logs to read engine output.</p>}
+            {!!logs.content.trim() && <>
+              {(logs.state === 'loading' || logs.state === 'error') && <p className="hint">Showing the last successful log snapshot.</p>}
+              <pre className="engine-logs" tabIndex={0} aria-label="Engine log output">{logs.content}</pre>
+            </>}
+          </Group>
+        </Surface>
       </div> : <Tree tree={dashboardView(status)} />}
     </div>
   </section>;
 }
 
-export const panel = (status: Status, action: Act) => <ThemeFrame><Panel status={status} action={action} /></ThemeFrame>;
+export const panel = (status: Status, action: Act, logs: LogsState = initialLogs) => <ThemeFrame><Panel status={status} action={action} logs={logs} /></ThemeFrame>;

@@ -205,13 +205,17 @@ async fn models(app: tauri::AppHandle) -> Result<Value, String> {
 #[tauri::command]
 async fn control(app: tauri::AppHandle, command: String, value: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let data = data(&app)?;
+        let root = data.join("project");
+        // Log snapshots are read-only and must not hold the mutation lock.
+        if command == "logs" {
+            return run(&root, &data, "ai", &["logs", "--once"]);
+        }
         let state = app.state::<Operations>();
         let _guard = state
             .0
             .try_lock()
             .map_err(|_| "Another PAIN operation is in progress.")?;
-        let data = data(&app)?;
-        let root = data.join("project");
         match command.as_str() {
             "setup" => {
                 prepare(&app, &data, &root)?;
@@ -251,7 +255,6 @@ async fn control(app: tauri::AppHandle, command: String, value: String) -> Resul
                 Ok(String::new())
             }
             "down" => run(&root, &data, "ai", &["down"]),
-            "logs" => run(&root, &data, "ai", &["logs", "--once"]),
             "download" => {
                 if !value.starts_with("https://") {
                     return Err("Use an HTTPS GGUF download URL.".into());
