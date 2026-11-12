@@ -120,3 +120,67 @@ function removalReason(model, status) {
   if (model.removable !== true) return "Removal is unavailable for these files."
   return ""
 }
+
+function known(value) {
+  return value !== undefined && value !== null && value !== "" && isFinite(Number(value))
+}
+
+// Shared presentation and action contract. Native QML retains its original
+// controls and layout; the Mac binding draws the same anatomy from these values.
+function panelState(status, host) {
+  host = host || {}
+  var online = status.online === true
+  var loaded = !!status.model_alias
+  var inf = status.inference || {}
+  var hw = status.hardware || {}
+  var mem = status.memory && typeof status.memory === "object" ? status.memory : {}
+  var split = status.memory_split || {}
+  var generating = online && inf.processing === true
+  var busy = host.busyAction || status.busy || ""
+  var mac = host.platform === "mac"
+  var action = String(busy).toLowerCase()
+  var meta = !online ? "Offline · " + (status.backend || "no backend")
+    : engineLabel(status) + " · " + (!loaded ? "no model loaded" : generating ? "generating" : "idle")
+  if (action === "up" || action === "starting") meta = "Starting " + (host.busyBackend || status.backend || "engine") + "…"
+  else if (action === "down" || action === "stopping") meta = "Stopping engine…"
+  else if (busy) meta = String(busy)
+  else if (status.error) meta = String(status.error)
+  var detail = busy ? (host.controlLine === undefined ? status.controlLine || String(busy) : host.controlLine)
+    : !online ? "" : generating ? speedText(host.speed === undefined ? status.speed : host.speed) : loaded ? "Ready" : "Standby"
+  var available = status.runtimeReady !== false
+  var actions = [
+    { key: "up", label: action === "up" || action === "starting" ? "Starting…" : online ? "Restart" : "Start", icon: "󰐊", tip: "Start the selected backend, replacing any running engine", enabled: !busy && available },
+    { key: "down", label: action === "down" || action === "stopping" ? "Stopping…" : "Stop", icon: "󰓛", tip: "Stop the engine and unload the model", enabled: !busy && online }
+  ]
+  if (!mac) actions.push({ key: "top", label: "Monitor", icon: "󰍹", tip: "Open paintop in a terminal", enabled: true })
+  actions.push({ key: "logs", label: "Logs", icon: "󰆍", tip: mac ? "Show engine logs" : "Follow engine logs in a terminal", enabled: mac ? !busy && available : online })
+  var memoryAvailable = known(mem.total_gib) && num(mem.total_gib) > 0
+  var gttAvailable = known(hw.gtt_total_gib) && num(hw.gtt_total_gib) > 0
+  return {
+    online: online, loaded: loaded, generating: generating, busy: !!busy,
+    meta: meta, detail: detail, actions: actions,
+    inference: {
+      model: status.model_alias || "none loaded",
+      prompt: inf.has_slot ? kTokens(inf.prompt) + " tokens · KV " + cacheHitText(inf) : "—",
+      draft: loaded ? draftText(inf, status) : "—",
+      speed: generating ? speedText(host.speed === undefined ? status.speed : host.speed) : loaded ? "idle" : "—",
+      context: contextText(inf), fraction: contextFraction(inf)
+    },
+    memory: {
+      available: memoryAvailable, ram: memoryAvailable ? gibPair(mem.used_gib, mem.total_gib) : "Unavailable",
+      total: num(mem.total_gib), segments: status.memory_split ? ramSegments(split, loaded) : [],
+      gtt: gttAvailable ? gibPair(hw.gtt_used_gib, hw.gtt_total_gib) : "Unavailable",
+      gttRatio: known(split.gtt_ratio) ? clamp01(split.gtt_ratio) : gttAvailable ? clamp01(num(hw.gtt_used_gib) / hw.gtt_total_gib) : 0,
+      gttCap: memoryAvailable && gttAvailable ? gttCapFraction(hw, mem) : -1,
+      gttCaption: gttAvailable ? "GTT cap " + num(hw.gtt_total_gib).toFixed(0) + " GiB (" + (known(split.gtt_share_pct) ? num(split.gtt_share_pct) : Math.round(gttCapFraction(hw, mem) * 100)) + "% of RAM)" : "",
+      swap: status.swap ? swapText(status.swap) : "Unavailable"
+    },
+    hardware: {
+      gpu: known(hw.gpu_busy_pct) ? Math.round(num(hw.gpu_busy_pct)) + "%" : "Unavailable",
+      gpuFraction: known(hw.gpu_busy_pct) ? clamp01(num(hw.gpu_busy_pct) / 100) : 0,
+      power: known(hw.ppt_w) ? num(hw.ppt_w).toFixed(1) + " W" : "Unavailable",
+      powerFraction: known(hw.ppt_w) ? clamp01(num(hw.ppt_w) / 70) : 0,
+      thermals: tempsText(hw) === "—" ? "Unavailable" : tempsText(hw)
+    }
+  }
+}

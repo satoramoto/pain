@@ -284,11 +284,16 @@ async fn snapshot(app: tauri::AppHandle) -> Result<Value, String> {
                         if let Ok(response) = client.get("http://127.0.0.1:11434/slots").query(&[("model", model)]).send() {
                             if let Ok(slots) = response.json::<Value>() {
                                 if let Some(slots) = slots.as_array() {
-                                    if let Some(slot) = slots.iter().find(|s|s["is_processing"] == true).or_else(||slots.first()) {
+                                    if let Some(slot) = slots.iter().find(|s|s["is_processing"] == true).or_else(||slots.first()).filter(|slot|slot.is_object()) {
+                                        let cache_hit_pct = slot["n_prompt_tokens"].as_u64().filter(|prompt| *prompt > 0)
+                                            .zip(slot["n_prompt_tokens_cache"].as_u64())
+                                            .map(|(prompt, cached)| (cached as f64 / prompt as f64 * 100.0).round_ties_even() as u64);
                                         result["inference"] = json!({
-                                            "n_ctx":slot["n_ctx"],"prompt":slot["n_prompt_tokens"],
+                                            "has_slot":true,"n_ctx":slot["n_ctx"],"prompt":slot["n_prompt_tokens"],
+                                            "cached":slot["n_prompt_tokens_cache"],"cache_hit_pct":cache_hit_pct,
                                             "decoded":slot["next_token"][0]["n_decoded"],
-                                            "processing":slot["is_processing"]
+                                            "remain":slot["next_token"][0]["n_remain"],
+                                            "processing":slot["is_processing"],"speculative":slot["speculative"]
                                         });
                                     }
                                 }

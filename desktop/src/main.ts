@@ -30,7 +30,6 @@ function render() {
     return;
   }
   app.render(h(Fragment, null,
-    h('button', { className: 'getting-started', onClick: () => { showSetup = true; render(); } }, 'Getting Started'),
     panel(status, action),
     logs ? h('pre', { className: 'engine-logs' }, logs) : null,
   ));
@@ -63,6 +62,7 @@ async function refresh() {
   render();
 }
 async function action(command: Action, value?: string) {
+  if (command === 'getting-started') { showSetup = true; render(); return; }
   if (busy) return;
   if (command === 'refresh') { modelsLoaded = false; await refresh(); return; }
   const labels: Partial<Record<Action, string>> = { up: 'STARTING', use: 'SWITCHING', fetch: 'DOWNLOADING', download: 'DOWNLOADING', folder: 'CHANGING FOLDER', remove: 'REMOVING' };

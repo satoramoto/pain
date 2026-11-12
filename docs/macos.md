@@ -25,12 +25,12 @@ checks only validate the container and cross-platform application code.
 2. Download the app artifact from the **Mac QA** workflow for this branch. Open
    the DMG and copy PAIN to Applications. macOS may require Open Anyway for this
    unsigned-distribution QA build.
-3. Open PAIN and click **Prepare VM**. This installs the private runtime under
-   the application's user data directory, creates `pain-metal` if missing, and
-   starts it. The first machine setup requires internet access for the Linux image.
-4. Enter an HTTPS GGUF download URL for a small supported model. PAIN downloads
-   into `~/Models` and registers a 32768-token preset. Click **Start** afterward.
-   The first start builds the controller and inference containers in the VM.
+3. Open PAIN and follow **Getting Started** to prepare the private runtime, VM
+   and starter model. The first setup requires internet access for the Linux
+   image, model and containers.
+4. Open **Models** to download another supported preset or add an HTTPS GGUF
+   URL. Choose **Use** to start a downloaded model. Models are stored in
+   `~/Models` unless you change the folder in the model manager.
 5. Use the menu-bar PAIN entry to reopen the window. Closing the window hides it;
    quitting the UI keeps inference running. Use **Stop** to stop inference.
 
@@ -38,7 +38,7 @@ The tray reports inference state/context and measured generation speed. It does
 not present Linux VM memory statistics as Mac hardware telemetry. Model weights
 are external persistent data, never part of the app bundle.
 
-The shared **Models** list shows supported presets, download sizes and local
+The separate **Models** view shows supported presets, download sizes and local
 availability. Use **Download** or **Resume** to fetch a preset and **Use** to
 start it. **Remove** asks for confirmation before removing its local weights and
 partial downloads; stop inference first. Files shared with another preset or
@@ -155,12 +155,18 @@ Sources: [llama.cpp VirtGPU](https://github.com/ggml-org/llama.cpp/blob/master/d
 
 ## UI stories and checks
 
-`integrations/omarchy/pain/Panel.mjs` defines the shared Zen panel: status,
-inference, backend actions and supported models. The Mac app uses Zen's React
-renderer and Omarchy uses its QML Tree renderer, with the same layout vocabulary.
-Platform adapters supply status and execute actions; Linux hardware telemetry
-appears only when that data is available. Mac setup, model-folder selection and
-downloads by URL remain available alongside the panel.
+The original `integrations/omarchy/pain/Widget.qml` is the dashboard reference:
+hero, telemetry rows, filled and stacked meters, backend chips, actions and
+keyboard navigation. The Mac dashboard uses Zen's full view-tree renderer to
+follow that anatomy, and shares status formatting with the native panel. Zen's
+portable Omarchy kit currently lacks the original
+hero, meter and stacked-bar primitives, so those rich native components are
+preserved rather than flattened into the kit's generic controls.
+
+The model manager is a separate shared Zen view. Guided setup, model-folder
+selection and downloads by URL stay outside the compact dashboard. Platform
+adapters supply status and execute actions; unavailable Mac hardware readings
+are identified instead of substituting Linux VM measurements.
 
 `desktop/` contains the Tauri host and Storybook. Both renderer catalogs consume
 shared JSON fixtures. Tauri stories are interactive; Omarchy stories show native

@@ -1,6 +1,9 @@
 # PAIN development
 
-Keep the Mac and Omarchy panel definitions shared through Zen's Omarchy kit.
+Preserve the original Omarchy panel's layout, telemetry and interactions. Keep
+guided setup and model management in separate views, not in the core dashboard.
+Share the model manager and formatting/action contract through Zen; preserve
+the native rich components when the portable kit cannot express them faithfully.
 Platform adapters supply data and execute actions; model file management lives
 in `ai`. Native Linux telemetry must not be presented as Mac hardware telemetry.
 
