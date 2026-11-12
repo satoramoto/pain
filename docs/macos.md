@@ -38,6 +38,13 @@ The tray reports inference state/context and measured generation speed. It does
 not present Linux VM memory statistics as Mac hardware telemetry. Model weights
 are external persistent data, never part of the app bundle.
 
+The shared **Models** list shows supported presets, download sizes and local
+availability. Use **Download** or **Resume** to fetch a preset and **Use** to
+start it. **Remove** asks for confirmation before removing its local weights and
+partial downloads; stop inference first. Files shared with another preset or
+linked outside normal model storage are protected. Preset definitions remain so
+removed downloads can be fetched again.
+
 ## Test a checkout instead
 
 Pull `fix/mac-virtgpu`, download the runtime artifact produced by the matching
@@ -121,24 +128,53 @@ CI. `integrations/macos/build-runtime` is the equivalent developer-Mac entry
 point. Then run `npm --prefix desktop ci`, `npm --prefix desktop run stage`, and
 `npm --prefix desktop run tauri build -- --target aarch64-apple-darwin`.
 
+### Rebuild and install for local QA
+
+With the runtime tarball and checksum already in `.build`, run this from the
+checkout you want to try:
+
+```sh
+./integrations/macos/rebuild-install
+```
+
+The script verifies the cached runtime, installs JavaScript dependencies if
+missing, stages the current controller sources, and builds the Apple Silicon
+app with an ad-hoc signature for local QA. It quits the old PAIN window/tray and replaces `/Applications/PAIN.app`
+only after the new bundle passes signature verification. The VM, inference,
+models and application settings stay in place. Open PAIN from Applications
+when it finishes. It does not build a DMG or rebuild the Metal runtime.
+
+An optional absolute destination is supported, for example
+`./integrations/macos/rebuild-install "$HOME/Applications/PAIN.app"`.
+Temporary installation files are cleaned from `~/.syns/scratch/pain/`; a failed
+replacement restores the previous app when possible and reports any backup
+that needs attention.
+
 Sources: [llama.cpp VirtGPU](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/VirtGPU.md),
 [APIR Mac renderer](https://gitlab.freedesktop.org/kpouget/virglrenderer/-/tree/main-macos).
 
 ## UI stories and checks
 
-`desktop/` contains the Tauri view and Storybook. The web view uses generated
-exports of Omarchy's `Model.js`, and both renderer catalogs consume shared JSON
-fixtures. Tauri stories are interactive; Omarchy stories show native QML captures
-of the actual Widget.qml panel markup using installed Omarchy components. They
-are not a browser imitation, but do not test native popup placement or IPC.
-Regenerate captures on Omarchy with `python scripts/render-omarchy.py`.
+`integrations/omarchy/pain/Panel.mjs` defines the shared Zen panel: status,
+inference, backend actions and supported models. The Mac app uses Zen's React
+renderer and Omarchy uses its QML Tree renderer, with the same layout vocabulary.
+Platform adapters supply status and execute actions; Linux hardware telemetry
+appears only when that data is available. Mac setup, model-folder selection and
+downloads by URL remain available alongside the panel.
+
+`desktop/` contains the Tauri host and Storybook. Both renderer catalogs consume
+shared JSON fixtures. Tauri stories are interactive; Omarchy stories show native
+QML captures, which do not test native popup placement or IPC. Regenerate those
+captures on Omarchy with `python scripts/render-omarchy.py`.
 
 ```sh
 npm --prefix desktop ci
 npm --prefix desktop run build
 npm --prefix desktop run build-storybook
-python -m unittest discover -s tests -v
 ```
+
+Atomic compile and test commands, and when to use them, are listed in
+[`AGENTS.md`](../AGENTS.md). The full suite runs in CI.
 
 In this workspace, start Storybook through the shared preview manager:
 `node ~/Projects/satoramoto/zen-flow/herdr/scripts/previews.mjs ensure pain-desktop`.

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """PAIN: local inference setups, presets, and reproducible timing experiments."""
 import argparse
+from contextlib import contextmanager
 import datetime as dt
+import errno
+import fcntl
 import hashlib
 import itertools
 import json
@@ -9,8 +12,10 @@ import os
 import shutil
 from pathlib import Path
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -217,13 +222,129 @@ def preset_downloads(path):
 def preset_files(path):
     """[(file in PAIN_MODELS_DIR, url or None, declared bytes)] a preset needs."""
     root = models_dir()
-    downloads = preset_downloads(path)
-    if downloads:
-        return [(root / model_filename(urllib.parse.urlparse(url).path), url, size)
-                for url, size in downloads]
+    files = {root / model_filename(urllib.parse.urlparse(url).path): (url, size)
+             for url, size in preset_downloads(path)}
+    for source in preset_sources(path):
+        if source and source.startswith('/models/'):
+            files.setdefault(root / source[8:], (None, 0))
+    return [(file, url, size) for file, (url, size) in files.items()]
+
+
+def preset_sources(path):
+    """The main and optional draft model used by the generated router preset."""
     source = next((line.split(None, 1)[1].strip() for line in path.read_text().splitlines()
                    if line.strip().startswith('FROM ')), '')
-    return [(root / source[8:], None, 0)] if source.startswith('/models/') else []
+    if 'muse-glimmer' in f'{path.parent.name}-{path.stem}':
+        return ('/models/Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf',
+                '/models/dflash-Muse-Glimmer-30B-Q4_K_M.gguf')
+    return source, None
+
+
+def checked_model_path(path, weight=False):
+    """Refuse traversal, links and non-files before changing model-store files."""
+    root = models_dir()
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        raise ValueError('Model files must stay inside the models folder.') from None
+    if not relative.parts or '..' in relative.parts:
+        raise ValueError('Model files must stay inside the models folder.')
+    if weight and not path.name.lower().endswith(('.gguf', '.gguf.part')):
+        raise ValueError('Only GGUF weights and their partial downloads can be removed.')
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f'{current.name} is a symbolic link; manage it outside PAIN.')
+    if path.exists() and not path.is_file():
+        raise ValueError(f'{path.name} is not a regular file.')
+    return relative
+
+
+@contextmanager
+def model_operation():
+    """Serialize CLI mutations too, including downloads and engine starts."""
+    path = models_dir() / '.pain-models.lock'
+    checked_model_path(path)
+    # Read access lets both the desktop user and an elevated engine command lock it.
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644), 'r') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Another PAIN model or engine operation is in progress.') from None
+        yield
+
+
+def removal_files(name, available=None):
+    available = available if available is not None else presets()
+    if name not in available:
+        raise ValueError(f'Unknown model preset: {name}')
+    files = [file for file, _, _ in preset_files(available[name])]
+    candidates = []
+    for file in files:
+        for candidate in (file, file.with_name(file.name + '.part')):
+            checked_model_path(candidate, weight=True)
+            if candidate.exists():
+                candidates.append(candidate)
+    if not candidates:
+        raise ValueError('No downloaded weights or partial download to remove.')
+    owned = {file.resolve() for file in files}
+    for other, path in available.items():
+        if other != name and any(file.resolve() in owned for file, _, _ in preset_files(path)):
+            raise ValueError(f'Weights are shared with {other}; keep them for that preset.')
+    for filename in (SELECTED, 'models.ini'):
+        checked_model_path(models_dir() / filename)
+    if RUNTIME_STATE.exists() or CONTAINER_STATE.exists():
+        raise ValueError('Stop the PAIN engine before removing model files.')
+    return candidates
+
+
+def unlink_model_file(path):
+    """Unlink relative to opened directories, never following a replaced link."""
+    relative = checked_model_path(path)
+    directory = os.open(models_dir(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in relative.parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        try:
+            info = os.stat(relative.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f'{path.name} is no longer a regular file; nothing was removed there.')
+        os.unlink(relative.name, dir_fd=directory)
+        return True
+    finally:
+        os.close(directory)
+
+
+def remove_model(name):
+    files = removal_files(name)
+    # Also protect an engine started outside this checkout, without saved state.
+    cfg = config()
+    try:
+        connection = socket.create_connection((cfg.get('PAIN_API_HOST', '127.0.0.1'),
+                                               int(cfg.get('PAIN_PORT', '11434'))), timeout=2)
+    except OSError as exc:
+        if exc.errno != errno.ECONNREFUSED:
+            raise ValueError('Could not confirm the PAIN engine is stopped. Try again after stopping it.') from exc
+    else:
+        connection.close()
+        raise ValueError('Stop the PAIN engine before removing model files.')
+    changed = False
+    try:
+        for file in files:
+            changed = unlink_model_file(file) or changed
+        changed = True
+    finally:
+        if changed:
+            marker = models_dir() / SELECTED
+            if marker.exists() and marker.read_text().strip() == name:
+                unlink_model_file(marker)
+            generate_models_ini()
+    print(f'Removed downloaded files for {name}. The preset remains available.')
 
 
 def model_catalog():
@@ -231,19 +352,26 @@ def model_catalog():
     marker = models_dir() / SELECTED
     selected = marker.read_text().strip() if marker.exists() else ''
     rows = []
-    for name, path in presets().items():
+    available = presets()
+    for name, path in available.items():
         files = preset_files(path)
         comment = next((line[1:].strip() for line in path.read_text().splitlines()
                         if line.startswith('#')), '')
         present = sum(f.stat().st_size for f, _, _ in files if f.exists())
         partial = sum(p.stat().st_size for p in (f.with_name(f.name + '.part') for f, _, _ in files)
                       if p.exists())
+        try:
+            removal_files(name, available)
+            remove_blocked = ''
+        except (OSError, ValueError, RuntimeError) as exc:
+            remove_blocked = str(exc)
         rows.append({
             'id': name, 'title': comment or (files[0][0].name if files else name),
             'downloaded': bool(files) and all(f.exists() for f, _, _ in files),
             'downloadable': any(url for _, url, _ in files),
             'bytes': sum(size or (f.stat().st_size if f.exists() else 0) for f, _, size in files),
             'received': present + partial, 'selected': name == selected,
+            'removable': not remove_blocked, 'remove_blocked': remove_blocked,
         })
     return rows
 
@@ -282,10 +410,9 @@ def generate_models_ini():
     ]
     for name, path in presets().items():
         content = path.read_text()
-        model_src = None
+        model_src, draft_model = preset_sources(path)
         ctx = 65536
-        draft_model = None
-        draft_type = None
+        draft_type = 'draft-dflash' if draft_model else None
         batch = 512
         ubatch = 256
         threads = 8
@@ -295,8 +422,6 @@ def generate_models_ini():
 
         for line in content.splitlines():
             line = line.strip()
-            if line.startswith('FROM '):
-                model_src = line.split(None, 1)[1].strip()
             if line.startswith('PARAMETER num_ctx'):
                 try:
                     ctx = int(line.split()[2])
@@ -307,11 +432,6 @@ def generate_models_ini():
                     n_gpu_layers = int(line.split()[2])
                 except Exception:
                     pass
-
-        if 'muse-glimmer' in name:
-            model_src = '/models/Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf'
-            draft_model = '/models/dflash-Muse-Glimmer-30B-Q4_K_M.gguf'
-            draft_type = "draft-dflash"
 
         if not model_src:
             continue
@@ -335,7 +455,19 @@ def generate_models_ini():
         lines.append(f"ctx-size = {ctx}")
         lines.append("")
 
-    ini_path.write_text('\n'.join(lines) + '\n')
+    checked_model_path(ini_path)
+    # Replace atomically so polling never sees a truncated file and a user-owned
+    # models folder can refresh an ini previously written by an elevated engine.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=root, prefix='.models.ini-', delete=False) as output:
+            temporary = Path(output.name)
+            output.write('\n'.join(lines) + '\n')
+        temporary.chmod(0o644)
+        os.replace(temporary, ini_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     print(f'[PAIN] Generated router presets: {ini_path}', flush=True)
 
 
@@ -940,6 +1072,9 @@ def main():
     p.add_argument('--json', action='store_true')
     p = sub.add_parser('use', help='Select the preset a single-model engine serves')
     p.add_argument('preset')
+    p = sub.add_parser('remove', help='Remove a preset\'s local GGUF weights and partial downloads')
+    p.add_argument('preset')
+    p.add_argument('--yes', action='store_true', help='Confirm removal of local model files')
     p = sub.add_parser('add-model', help='Download a GGUF and register a small-context local preset')
     p.add_argument('url')
     p = sub.add_parser('config', help='Render a backend Compose configuration')
@@ -983,6 +1118,16 @@ def main():
             p.add_argument('cmd', nargs=argparse.REMAINDER,
                            help='Command to run in the container (after all options)')
     args = parser.parse_args()
+    if args.command == 'remove' and not args.yes:
+        parser.error('Model removal requires explicit confirmation: ./ai remove <preset> --yes')
+    if args.command in ('up', 'down', 'use', 'pull', 'remove', 'add-model', 'apply', 'sync'):
+        with model_operation():
+            execute(args)
+    else:
+        execute(args)
+
+
+def execute(args):
     if args.command == 'up':
         up(args.backend)
     elif args.command == 'config':
@@ -1032,6 +1177,8 @@ def main():
                 print(f"{row['id']:40} {state:9} {row['bytes'] / 1e9:6.1f} GB")
     elif args.command == 'use':
         use_model(args.preset)
+    elif args.command == 'remove':
+        remove_model(args.preset)
     elif args.command == 'pull' and args.source in presets() and preset_downloads(presets()[args.source]):
         pull_preset(args.source)
     elif args.command == 'pull':

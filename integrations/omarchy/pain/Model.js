@@ -94,3 +94,29 @@ function swapText(swap) {
   if (num(swap.nvme_total_gib) > 0) parts.push("NVMe " + num(swap.nvme_used_gib).toFixed(1))
   return parts.join(" · ") + " of " + num(swap.total_gib).toFixed(0) + " GiB"
 }
+
+function modelTooLarge(model, memory) {
+  // The Mac catalog reports physical RAM in bytes. Native Linux telemetry is
+  // an object and must not be interpreted as a Mac GPU memory limit.
+  return typeof memory === "number" && memory > 0 && num(model.bytes) > memory * 0.7
+}
+
+function modelProgress(model) {
+  return num(model.bytes) > 0 ? Math.min(99, Math.floor(num(model.received) * 100 / model.bytes)) : 0
+}
+
+function modelState(model, status) {
+  if (status.online && status.model_alias === model.id) return "Running"
+  if (status.fetching === model.id) return "Downloading… " + modelProgress(model) + "%"
+  if (model.downloaded) return model.selected ? "Downloaded · selected" : "Downloaded"
+  if (modelTooLarge(model, status.memory)) return "Too large for this Mac"
+  if (!model.downloadable) return "No download source"
+  return model.received ? modelProgress(model) + "% downloaded" : "Not downloaded"
+}
+
+function removalReason(model, status) {
+  if (status.online) return "Stop the engine before removing model files."
+  if (model.remove_blocked) return String(model.remove_blocked)
+  if (model.removable !== true) return "Removal is unavailable for these files."
+  return ""
+}

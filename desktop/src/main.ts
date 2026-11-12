@@ -2,9 +2,12 @@ import { listen } from '@tauri-apps/api/event';
 import { initialSetup, onboarding, runSetup, type Framework } from './onboarding';
 import { invoke } from '@tauri-apps/api/core';
 import { panel, type Status, type Action } from './panel';
+import { createElement as h, Fragment } from 'react';
+import { createRoot } from 'react-dom/client';
 let status: Status = { online: false, backend: 'llamacpp-metal', engine: 'llama.cpp' };
 let busy = false;
 let logs = '';
+let controlError = '';
 let sampledAt = 0;
 let decoded = 0;
 let model = '';
@@ -12,21 +15,25 @@ let setup = initialSetup();
 let showSetup = false;
 let firstSnapshot = true;
 const root = document.querySelector<HTMLElement>('#app')!;
+const app = createRoot(root);
 function render() {
   if (showSetup) {
-    root.replaceChildren(onboarding(setup, () => {
+    const screen = onboarding(setup, () => {
       if (busy) return;
       busy = true;
       void runSetup(setup, (step, selected) => invoke('onboarding_step', {step, selected}), render)
         .finally(() => {busy = false;});
     }, framework => {setup = {...initialSetup(), framework}; render();}, () => {showSetup = false; render();}, () => {
       void invoke('onboarding_step', {step:'launch',selected:setup.framework}).catch(error => {setup.error = String(error);render();});
-    }));
+    });
+    app.render(h('div', { ref: (element: HTMLDivElement | null) => { element?.replaceChildren(screen); } }));
     return;
   }
-  root.replaceChildren(panel(status, action));
-  const help = document.createElement('button'); help.className='getting-started'; help.textContent='Getting Started'; help.onclick=()=>{showSetup=true;render();}; root.prepend(help);
-  if (logs) { const pre = document.createElement('pre'); pre.textContent = logs; root.append(pre); }
+  app.render(h(Fragment, null,
+    h('button', { className: 'getting-started', onClick: () => { showSetup = true; render(); } }, 'Getting Started'),
+    panel(status, action),
+    logs ? h('pre', { className: 'engine-logs' }, logs) : null,
+  ));
 }
 let modelsLoaded = false;
 // Listing models starts a short-lived controller container, so it is not part of the 5s poll.
@@ -37,8 +44,8 @@ async function loadModels() {
   } catch { /* VM not running yet: keep the last list */ }
 }
 async function refresh() {
-  if (!modelsLoaded && status.runtimeReady) await loadModels();
   try {
+    const previousOnline = status.online;
     const next = await invoke<Status & {framework: Framework; onboarded: boolean}>('snapshot');
     if (firstSnapshot) {
       setup.framework = next.framework;
@@ -49,27 +56,28 @@ async function refresh() {
     const speed = next.inference?.processing && sampledAt && model === next.model_alias && count >= decoded
       ? (count - decoded) * 1000 / (now - sampledAt) : 0;
     decoded = count; sampledAt = now; model = next.model_alias || '';
-    status = { ...status, error: '', ...next, speed };
+    status = { ...status, ...next, error: controlError || next.error || '', speed };
+    if (status.runtimeReady && (!modelsLoaded || previousOnline !== status.online)) await loadModels();
   }
   catch (error) { status = { ...status, online: false, error: String(error) }; }
   render();
 }
 async function action(command: Action, value?: string) {
   if (busy) return;
-  if (command === 'refresh') { await refresh(); return; }
-  const labels: Partial<Record<Action, string>> = { up: 'STARTING', use: 'SWITCHING', fetch: 'DOWNLOADING', download: 'DOWNLOADING', folder: 'CHANGING FOLDER' };
-  busy = true; status.busy = labels[command] || command.toUpperCase(); status.error = '';
+  if (command === 'refresh') { modelsLoaded = false; await refresh(); return; }
+  const labels: Partial<Record<Action, string>> = { up: 'STARTING', use: 'SWITCHING', fetch: 'DOWNLOADING', download: 'DOWNLOADING', folder: 'CHANGING FOLDER', remove: 'REMOVING' };
+  busy = true; controlError = ''; status.busy = labels[command] || command.toUpperCase(); status.error = '';
   status.fetching = command === 'fetch' ? value : ''; render();
   try {
     const result = await invoke<string>('control', { command, value: value || '' });
-    status.busy = ''; status.fetching = ''; await loadModels(); await refresh();
+    status.busy = ''; status.fetching = ''; modelsLoaded = false; await refresh();
     if (command === 'logs') { logs = result; render(); }
-  } catch (error) { status.error = String(error); status.busy = ''; status.fetching = ''; await loadModels(); render(); }
+  } catch (error) { controlError = String(error); status.error = controlError; status.busy = ''; status.fetching = ''; await loadModels(); render(); }
   finally { busy = false; }
 }
 void listen('getting-started', () => {showSetup = true;render();});
 render(); void refresh(); setInterval(() => {
-  // A redraw replaces the form fields, so wait while one is being typed in.
+  // Leave a partially edited folder path alone while a poll is in flight.
   if (document.activeElement instanceof HTMLInputElement) return;
   if (!busy && !showSetup) void refresh();
   else if (status.fetching) void loadModels().then(render);

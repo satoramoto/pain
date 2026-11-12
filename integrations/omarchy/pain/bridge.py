@@ -50,6 +50,7 @@ def snapshot():
     backend = ai['backend']()
     snap = dict(server, backend=backend, backends=list(ai['BACKENDS']),
                 endpoint=f'http://127.0.0.1:{port}', memory=memory, hardware=hardware)
+    snap['models'] = ai['model_catalog']()
     snap['swap'] = top['get_swap_info']() if 'get_swap_info' in top else {}
     inference = summarize_inference(server)
     snap['inference'] = inference
@@ -81,32 +82,41 @@ def action(command, backend=None, escalate='sudo'):
     ai = runpy.run_path(str(ROOT / 'ai'))
     if command == 'up' and backend not in ai['BACKENDS']:
         raise ValueError('Choose a supported backend')
-    # Serialize starts/stops across terminals, widgets, and shell reloads.
+    if command in ('pull', 'use', 'remove') and backend not in ai['presets']():
+        raise ValueError('Choose a known model preset')
+    # Serialize model changes and starts/stops across desktop surfaces.
     lock_path = ROOT / '.state' / 'desktop.lock'
     lock_path.parent.mkdir(exist_ok=True)
     with lock_path.open('a') as lock:
-        if command in ('up', 'down'):
+        if command in ('up', 'down', 'pull', 'use', 'remove'):
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise ValueError('A PAIN desktop start/stop is already in progress.')
+                raise ValueError('A PAIN desktop operation is already in progress.')
         args = [str(ROOT / 'ai'), command]
-        if command == 'up':
+        if command in ('up', 'pull', 'use', 'remove'):
             args.append(backend)
-        if command != 'top':
+        if command == 'remove':
+            # Desktop callers show the confirmation before invoking the bridge.
+            args.append('--yes')
+        prefix = []
+        if command not in ('top', 'pull', 'remove'):
             runtime = ai['runtime']()
             probe = subprocess.run([runtime, 'info'], stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, timeout=10)
             if probe.returncode and runtime == 'podman':
                 raise ValueError('Podman is unavailable. Start its machine/service; PAIN will not switch to rootful Podman.')
             if probe.returncode:
-                args.insert(0, escalate)
-        return subprocess.run(args, cwd=ROOT).returncode
+                prefix = [escalate]
+        result = subprocess.run(prefix + args, cwd=ROOT).returncode
+        if result == 0 and command == 'use':
+            result = subprocess.run(prefix + [str(ROOT / 'ai'), 'up', ai['backend']()], cwd=ROOT).returncode
+        return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['status', 'up', 'down', 'logs', 'top'])
+    parser.add_argument('command', choices=['status', 'up', 'down', 'logs', 'top', 'pull', 'use', 'remove'])
     parser.add_argument('backend', nargs='?')
     args = parser.parse_args()
     if args.command == 'status':
@@ -127,17 +137,21 @@ def main():
         print(f'PAIN: {exc}', file=sys.stderr)
         result = 1
     if interactive:
-        if args.command in ('up', 'down') or result:
+        if args.command in ('up', 'down', 'pull', 'use', 'remove') or result:
             try:
                 input('\nPress Enter to close…')
             except (EOFError, KeyboardInterrupt):
                 pass
-    elif args.command in ('up', 'down'):
+    elif args.command in ('up', 'down', 'pull', 'use', 'remove'):
         target = args.backend or 'engine'
+        title = 'PAIN models' if args.command in ('pull', 'use', 'remove') else 'PAIN engine'
         if result:
-            notify('PAIN engine', f'Could not {args.command} {target}: {error or f"exit {result}"}', urgent=True)
+            notify(title, f'Could not {args.command} {target}: {error or f"exit {result}"}', urgent=True)
         else:
-            notify('PAIN engine', f'{target} started' if args.command == 'up' else 'Engine stopped')
+            message = {'up': f'{target} started', 'down': 'Engine stopped',
+                       'pull': f'{target} downloaded', 'use': f'{target} selected; engine started',
+                       'remove': f'{target} local files removed'}[args.command]
+            notify(title, message)
     return result
 
 

@@ -81,10 +81,15 @@ fn framework(data: &Path) -> String {
         _ => "podman".into(),
     }
 }
+fn refresh_payload(app: &tauri::AppHandle, root: &Path) -> Result<(), String> {
+    let resource = app.path().resource_dir().map_err(|e| e.to_string())?;
+    // Overlay shipped files only: unbundled .state and custom presets remain.
+    // Runtime installation is deliberately separate from an application upgrade.
+    copy_tree(&resource.join("payload"), root)
+}
 fn prepare(app: &tauri::AppHandle, data: &Path, root: &Path) -> Result<(), String> {
     let resource = app.path().resource_dir().map_err(|e| e.to_string())?;
-    // Only packaged application files are copied. Models and .state are not part of the payload.
-    copy_tree(&resource.join("payload"), &root)?;
+    refresh_payload(app, root)?;
     let archive = resource.join("runtime/pain-macos-runtime-arm64.tar.gz");
     let same_llama = fs::read(data.join("runtime/current/llama-revision")).ok()
         == fs::read(root.join("containers/virtgpu/llama-revision")).ok();
@@ -154,8 +159,7 @@ async fn onboarding_step(
             let _ = fs::remove_file(data.join("onboarding.complete"));
             fs::write(data.join("framework"), &selected).map_err(|e|e.to_string())?;
             // Stage scripts before installing the system runtime; APIR is unpacked during machine setup.
-            let resource = app.path().resource_dir().map_err(|e|e.to_string())?;
-            copy_tree(&resource.join("payload"), &root)?;
+            refresh_payload(&app, &root)?;
         } else if framework(&data) != selected { return Err("The framework changed. Reopen Getting Started and try again.".into()); }
         if step == "machine" { prepare(&app, &data, &root)?; }
         let result = run(&root, &data, "onboarding", &[&step, &selected])?;
@@ -229,6 +233,7 @@ async fn control(app: tauri::AppHandle, command: String, value: String) -> Resul
                 ],
             ),
             "fetch" => run(&root, &data, "ai", &["pull", preset_name(&value)?]),
+            "remove" => run(&root, &data, "ai", &["remove", preset_name(&value)?, "--yes"]),
             "use" => {
                 run(&root, &data, "ai", &["use", preset_name(&value)?])?;
                 let started = run(&root, &data, "ai", &["up", if framework(&data) == "docker" { "llamacpp-cpu" } else { "llamacpp-metal" }])?;
@@ -351,6 +356,9 @@ fn main() {
         .manage(Operations(Mutex::new(())))
         .invoke_handler(tauri::generate_handler![control, snapshot, onboarding_step, models])
         .setup(|app| {
+            let directory = data(app.handle()).map_err(std::io::Error::other)?;
+            refresh_payload(app.handle(), &directory.join("project"))
+                .map_err(std::io::Error::other)?;
             let show = MenuItem::with_id(app, "show", "Open PAIN", true, None::<&str>)?;
             let quit = MenuItem::with_id(
                 app,

@@ -1,84 +1,72 @@
-import { engineLabel, contextText, speedText } from './model.js';
+import { createElement as h, useEffect, useState } from 'react';
+import type { ChangeEvent, FormEvent } from 'react';
+import { Preview } from '@satoramoto/zen/harness/omarchy/bench/Preview.tsx';
+import { view } from '../../integrations/omarchy/pain/Panel.mjs';
+import { removalReason } from '../../.build/pain-ui/model.mjs';
 import './style.css';
+
 export type Status = {
-  online: boolean; backend: string; engine?: string; model_alias?: string;
+  online: boolean; backend: string; engine?: string; model_alias?: string; backends?: string[];
   inference?: Record<string, number | boolean | null>; speed?: number;
   error?: string; busy?: string; runtimeReady?: boolean;
   models?: Model[]; memory?: number; fetching?: string; modelsDir?: string;
 };
-export type Model = { id: string; title: string; downloaded: boolean; downloadable: boolean; bytes: number; received: number; selected: boolean };
-export type Action = 'setup' | 'up' | 'down' | 'logs' | 'refresh' | 'download' | 'use' | 'fetch' | 'folder';
-// Weights must fit in the memory macOS lets the GPU use, roughly 70% of RAM.
-const tooLarge = (model: Model, memory = 0) => !!memory && model.bytes > memory * 0.7;
-export function modelList(status: Status, action: (name: Action, value?: string) => void): HTMLElement {
-  const list = document.createElement('ul'); list.className = 'models';
-  for (const model of status.models || []) {
-    const running = status.online && status.model_alias === model.id;
-    const size = model.bytes ? `${(model.bytes / 1e9).toFixed(1)} GB` : '';
-    const progress = model.bytes ? Math.min(99, Math.floor(model.received * 100 / model.bytes)) : 0;
-    const state = running ? 'Running'
-      : model.downloaded ? 'Downloaded'
-      : status.fetching === model.id ? `Downloading… ${progress}%`
-      : tooLarge(model, status.memory) ? 'Too large for this Mac'
-      : !model.downloadable ? 'No download source'
-      : model.received ? `${progress}% downloaded` : 'Not downloaded';
-    const row = document.createElement('li'); if (running) row.className = 'running';
-    const text = document.createElement('div');
-    const name = document.createElement('b'); name.textContent = model.title;
-    const detail = document.createElement('small'); detail.textContent = [model.id, size, state].filter(Boolean).join(' · ');
-    text.append(name, detail); row.append(text);
-    const offer = model.downloaded ? (running ? '' : 'Use')
-      : model.downloadable && !tooLarge(model, status.memory) ? (model.received ? 'Resume' : 'Download') : '';
-    if (offer) {
-      const b = document.createElement('button'); b.textContent = offer; b.disabled = !!status.busy;
-      b.setAttribute('aria-label', `${offer} ${model.title}`);
-      b.onclick = () => action(model.downloaded ? 'use' : 'fetch', model.id); row.append(b);
+export type Model = {
+  id: string; title: string; downloaded: boolean; downloadable: boolean;
+  bytes: number; received: number; selected: boolean; removable?: boolean; remove_blocked?: string;
+};
+export type Action = 'setup' | 'up' | 'down' | 'logs' | 'refresh' | 'download' | 'use' | 'fetch' | 'folder' | 'remove';
+type Act = (name: Action, value?: string) => void;
+
+function Panel({ status, action }: { status: Status; action: Act }) {
+  const [removeId, setRemoveId] = useState('');
+  const [url, setUrl] = useState('');
+  const [folder, setFolder] = useState(status.modelsDir || '');
+  useEffect(() => setFolder(status.modelsDir || ''), [status.modelsDir]);
+  useEffect(() => {
+    if (removeId && !status.models?.some(model => model.id === removeId)) setRemoveId('');
+  }, [removeId, status.models]);
+  const dispatch = (name: string, payload?: unknown) => {
+    const id = typeof payload === 'string' ? payload : '';
+    if (name === 'cancel-remove') { setRemoveId(''); return; }
+    if (name === 'request-remove' || name === 'confirm-remove') {
+      const model = status.models?.find(model => model.id === id);
+      if (status.busy || !model || removalReason(model, status)) return;
+      if (name === 'request-remove') setRemoveId(id);
+      else if (removeId === id) { setRemoveId(''); action('remove', id); }
+      return;
     }
-    list.append(row);
-  }
-  return list;
-}
-export function panel(status: Status, action: (name: Action, value?: string) => void): HTMLElement {
-  const root = document.createElement('section'); root.className = 'panel';
-  const label = (tag: string, text: string, cls = '') => {
-    const node = document.createElement(tag); node.textContent = text; node.className = cls; return node;
+    if (['setup', 'up', 'down', 'logs', 'refresh', 'use', 'fetch'].includes(name)) action(name as Action, id);
   };
-  const header = document.createElement('header');
-  header.append(label('span', '◈', 'mark'), label('h1', 'PAIN'), label('span', status.busy || (status.online ? 'ONLINE' : 'OFFLINE'), 'badge'));
-  root.append(header, label('p', engineLabel(status), 'engine'));
-  root.append(label('h2', status.model_alias || 'Your private AI, on this Mac.'));
-  const stats = document.createElement('div'); stats.className = 'stats';
-  for (const [name, value] of [['CONTEXT', contextText(status.inference || {})], ['GENERATION', speedText(status.speed || 0)]]) {
-    const item = document.createElement('div'); item.append(label('small', name), label('strong', value)); stats.append(item);
-  }
-  root.append(stats);
-  const controls = document.createElement('div'); controls.className = 'controls';
-  const button = (title: string, command: Action, disabled = false) => {
-    const b = document.createElement('button'); b.textContent = title; b.disabled = disabled;
-    b.onclick = () => action(command); controls.append(b);
+  const disabled = !!status.busy;
+  const submitUrl = (event: FormEvent) => {
+    event.preventDefault();
+    if (!disabled && status.runtimeReady !== false) action('download', url);
   };
-  button('Prepare VM', 'setup', !!status.busy);
-  button(status.online ? 'Restart' : 'Start', 'up', !!status.busy || !status.runtimeReady);
-  button('Stop', 'down', !!status.busy || !status.online);
-  button('Logs', 'logs', !!status.busy || !status.runtimeReady);
-  button('Refresh', 'refresh', !!status.busy);
-  root.append(controls);
-  const form = document.createElement('form');
-  const input = document.createElement('input'); input.type = 'url'; input.required = true;
-  input.placeholder = 'https://…/model.gguf'; input.setAttribute('aria-label', 'Model GGUF URL');
-  const submit = document.createElement('button'); submit.textContent = 'Download model'; submit.disabled = !!status.busy || !status.runtimeReady;
-  form.append(input, submit); form.onsubmit = event => { event.preventDefault(); action('download', input.value); };
-  if (status.models?.length) root.append(label('small', 'MODELS'), modelList(status, action));
-  root.append(label('small', 'ADD A MODEL BY URL'), form,
-    label('p', 'Any HTTPS GGUF link. It appears in the list above; choose Use to load it.', 'hint'));
-  const folder = document.createElement('form');
-  const path = document.createElement('input'); path.required = true; path.value = status.modelsDir || '';
-  path.setAttribute('aria-label', 'Models folder');
-  const save = document.createElement('button'); save.textContent = 'Change folder'; save.disabled = !!status.busy;
-  folder.append(path, save); folder.onsubmit = event => { event.preventDefault(); action('folder', path.value); };
-  root.append(label('small', 'MODELS FOLDER'), folder,
-    label('p', 'Where model files are kept. Must be inside your home folder. Changing it stops the engine; files already downloaded stay in the old folder.', 'hint'));
-  if (status.error) { const error = label('p', status.error, 'error'); error.setAttribute('role', 'alert'); root.append(error); }
-  root.append(label('p', 'Localhost only · Metal through VirtGPU', 'footnote'));
-  return root;
+  const submitFolder = (event: FormEvent) => {
+    event.preventDefault();
+    if (!disabled) action('folder', folder);
+  };
+  return h('section', { className: 'panel', 'aria-label': 'PAIN dashboard' },
+    h('div', { role: status.error ? 'alert' : undefined },
+      h(Preview, { tree: view(status, { platform: 'mac', removeId }), dispatch, width: 520, theme: { font: 'ui-monospace, SFMono-Regular, Menlo, monospace' } })),
+    h('div', { className: 'mac-controls' },
+      h('form', { onSubmit: submitUrl },
+        h('label', { htmlFor: 'model-url' }, 'ADD A MODEL BY URL'),
+        h('div', { className: 'field-row' },
+          h('input', { id: 'model-url', type: 'url', required: true, placeholder: 'https://…/model.gguf', 'aria-label': 'Model GGUF URL', value: url, disabled,
+            onChange: (event: ChangeEvent<HTMLInputElement>) => setUrl(event.target.value) }),
+          h('button', { type: 'submit', disabled: disabled || status.runtimeReady === false }, 'Download model')),
+        h('p', { className: 'hint' }, 'Any HTTPS GGUF link. It appears in the list above; choose Use to load it.')),
+      h('form', { onSubmit: submitFolder },
+        h('label', { htmlFor: 'models-folder' }, 'MODELS FOLDER'),
+        h('div', { className: 'field-row' },
+          h('input', { id: 'models-folder', required: true, 'aria-label': 'Models folder', value: folder, disabled,
+            onChange: (event: ChangeEvent<HTMLInputElement>) => setFolder(event.target.value) }),
+          h('button', { type: 'submit', disabled }, 'Change folder')),
+        h('p', { className: 'hint' }, 'Must be inside your home folder. Changing it stops the engine; downloaded files stay in the old folder.')),
+      h('p', { className: 'footnote' }, status.backend.includes('metal') ? 'Localhost only · Metal through VirtGPU' : 'Localhost only · CPU inference')),
+  );
 }
+
+export const panel = (status: Status, action: Act) => h(Panel, { status, action });
