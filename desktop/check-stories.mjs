@@ -40,5 +40,24 @@ try {
     if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) throw new Error('Onboarding overflows the window');
     console.log(`PASS onboarding/${state} screenshot and narrow layout`);
   }
+  await page.setViewportSize({width:460,height:720});
+  await page.goto(`${origin}/iframe.html?id=tray-tauri--offline&viewMode=story`);
+  for (const appearance of ['omarchy','visuals']) {
+    await page.getByRole('combobox',{name:'Theme'}).selectOption(appearance);
+    await expect(page.locator('.zen-application')).toHaveAttribute('data-appearance',appearance);
+    const start=page.getByRole('button',{name:'Start',exact:true});
+    await start.hover();
+    await page.screenshot({path:`../.build/ui-checks/${appearance}-hover.png`});
+    await start.focus(); await expect(start).toBeFocused();
+    await expect(page.getByRole('button',{name:'Stop',exact:true})).toHaveAttribute('aria-disabled','true');
+    await page.screenshot({path:`../.build/ui-checks/${appearance}-focus.png`});
+    if(await page.locator('.zen-application').evaluate(el=>el.scrollWidth>el.clientWidth))throw new Error(`${appearance} panel overflows`);
+    for (const tab of await page.getByRole('tab').all()) {
+      const fits=await tab.evaluate(element=>Array.from(element.querySelectorAll('*')).filter(child=>!child.children.length && child.textContent?.trim() && getComputedStyle(child).display!=='inline').every(child=>child.scrollWidth<=child.clientWidth));
+      if(!fits)throw new Error(`${appearance} tab label is clipped`);
+    }
+    console.log(`PASS ${appearance} selection, focus, disabled state and narrow layout`);
+  }
+  await page.getByRole('combobox',{name:'Theme'}).selectOption('platform');
   if(errors.length) throw new Error(errors.join('\n'));
 } finally {await browser.close();}

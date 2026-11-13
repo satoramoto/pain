@@ -9,7 +9,7 @@ const archive = pkg.devDependencies['@satoramoto/zen'];
 const revision = archive.match(/\/([a-f0-9]{40})\.tar\.gz$/)?.[1];
 if (!revision) throw new Error('PAIN requires a full-SHA Zen dependency.');
 const require = createRequire(new URL('desktop/package.json', root));
-const files = ['ui.mjs', 'ui.d.mts', 'layout.mjs', 'layout.d.mts', 'theme.mjs', 'theme.d.mts', 'Tree.qml', 'Theme.qml', 'application.mjs', 'application.d.mts', 'Application.qml', 'ApplicationTree.qml'];
+const files = ['ui.mjs', 'ui.d.mts', 'layout.mjs', 'layout.d.mts', 'theme.mjs', 'theme.d.mts', 'Tree.qml', 'Theme.qml', 'application.mjs', 'application.d.mts', 'Application.qml', 'ApplicationTree.qml', 'ApplicationTheme.qml', 'application-themes.mjs'];
 mkdirSync(target, { recursive: true });
 
 // Use the installed, locked dependency for desktop builds. Native-only installs

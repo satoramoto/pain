@@ -42,7 +42,13 @@ are external persistent data, never part of the app bundle.
 
 The **Dashboard** and **Models** tabs share a pinned, aligned action toolbar.
 Mac uses Visual Flow's Zen theme, separated glass section surfaces and native
-macOS HUD-window vibrancy. Linux renders the same view through Zen’s QML application binding.
+macOS HUD-window vibrancy. Linux renders the same view through Zen’s QML
+application binding, using the live Omarchy style by default. The shared **Theme**
+picker offers **Platform default**, **Omarchy**, and **Visual Flow** and remembers
+the selection. Native Omarchy controls follow the desktop’s button states, colors,
+font and corners. The Mac Omarchy option uses Zen’s portable fallback palette
+because macOS has no Omarchy shell. Layout and engine state stay unchanged when
+switching themes.
 
 The separate **Models** view shows supported presets, download sizes and local
 availability. Use **Download** or **Resume** to fetch a preset and **Use** to

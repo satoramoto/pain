@@ -3,6 +3,7 @@ import { Application } from '@satoramoto/zen/harness/omarchy/bench/Application.t
 import type { ApplicationNode } from '@satoramoto/zen/harness/omarchy/kit/application.mjs';
 import { appView } from '../../integrations/omarchy/pain/App.mjs';
 import { initialState, transition, keyAction } from '../../integrations/omarchy/pain/AppState.mjs';
+import { appearanceFor, validTheme } from '../../integrations/omarchy/pain/Appearance.mjs';
 import { ThemeFrame } from './theme';
 import './style.css';
 
@@ -25,20 +26,25 @@ type Act = (name: Action, value?: string) => void;
 
 // This host supplies state and executes effects. Layout lives in App.mjs.
 function Panel({ status, action, logs }: { status: Status; action: Act; logs: LogsState }) {
-  const [ui, setUi] = useState(() => initialState(status));
+  const [ui, setUi] = useState(() => {
+    const state = initialState(status);
+    try { const saved = localStorage.getItem('pain.appearance'); if (validTheme(saved)) state.theme = saved!; } catch { /* A restricted webview can still use the platform default. */ }
+    return state;
+  });
   useEffect(() => setUi(current => ({ ...current, folder: status.modelsDir || '' })), [status.modelsDir]);
   const send = (name: string, payload?: unknown, value?: unknown) => {
     const next = transition(ui, status, name, value === undefined ? payload : value, logs);
     setUi(next.state);
+    if (name === 'select-theme') { try { localStorage.setItem('pain.appearance', next.state.theme); } catch { /* Keep the live selection when storage is unavailable. */ } }
     for (const effect of next.effects) {
       if (effect.action !== 'close') action(effect.action as Action, effect.payload as string | undefined);
     }
   };
-  return <Application tree={appView(status, ui, logs) as ApplicationNode} dispatch={send} handleKey={key => {
+  return <ThemeFrame appearance={appearanceFor(ui.theme, 'mac')}><Application appearance={appearanceFor(ui.theme, 'mac')} tree={appView(status, ui, logs) as ApplicationNode} dispatch={send} handleKey={key => {
     const command = keyAction(ui, key);
     if (!command) return false;
     send(command); return true;
-  }} />;
+  }} /></ThemeFrame>;
 }
 
-export const panel = (status: Status, action: Act, logs: LogsState = initialLogs) => <ThemeFrame><Panel status={status} action={action} logs={logs} /></ThemeFrame>;
+export const panel = (status: Status, action: Act, logs: LogsState = initialLogs) => <Panel status={status} action={action} logs={logs} />;
