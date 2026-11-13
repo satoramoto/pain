@@ -1,11 +1,14 @@
 # PAIN development
 
-Preserve the original Omarchy panel's layout, telemetry and interactions. Keep
-guided setup and model management in separate views, not in the core dashboard.
-Share the model manager and formatting/action contract through Zen; preserve
-the native rich components when the portable kit cannot express them faithfully.
-Platform adapters supply data and execute actions; model file management lives
-in `ai`. Native Linux telemetry must not be presented as Mac hardware telemetry.
+The Mac view is the visual and interaction reference for every platform. Define
+the entire interface once through Zen's portable view vocabulary: dashboard,
+navigation, model manager, logs, and controls. Both the browser and QML renderers
+consume that definition. Do not keep separate React and handwritten QML screens.
+If a required component is missing from the portable vocabulary, extend Zen and
+its renderers rather than simplifying the reference view or duplicating it.
+Platform adapters only host windows, supply capabilities and telemetry, and
+execute actions; model file management lives in `ai`. Native Linux telemetry
+must not be presented as Mac hardware telemetry.
 
 ## Build and compile checks
 

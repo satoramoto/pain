@@ -6,6 +6,7 @@ import { Preview } from '@satoramoto/zen/harness/omarchy/bench/Preview.tsx';
 import { themeOf } from '@satoramoto/zen/harness/omarchy/kit/theme.mjs';
 import type { Element } from '@satoramoto/zen/harness/omarchy/kit/ui.mjs';
 import { view } from '../../integrations/omarchy/pain/Panel.mjs';
+import { initialState, transition, tabs } from '../../integrations/omarchy/pain/AppState.mjs';
 import { panelState, removalReason } from '../../.build/pain-ui/model.mjs';
 import { dashboardView, glyph, heroView, type Cursor } from './dashboard';
 import { ThemeFrame } from './theme';
@@ -28,7 +29,6 @@ export type LogsState = { state: 'idle' | 'loading' | 'ready' | 'error'; content
 const initialLogs: LogsState = { state: 'idle', content: '', error: '' };
 type Act = (name: Action, value?: string) => void;
 type Screen = 'dashboard' | 'models' | 'logs';
-const tabs = [{ id: 'dashboard', label: 'Dashboard' }, { id: 'models', label: 'Models' }, { id: 'logs', label: 'Logs' }];
 
 // The portable manager inherits the same real Zen scope as the dashboard.
 const managerTheme = themeOf({ background: 'transparent', foreground: 'var(--text-1)', muted: 'var(--text-3)', accent: 'var(--accent)', urgent: 'var(--danger)', font: 'var(--font-sans)', size: 13, small: 12, gap: 12, rowGap: 8, padding: 0, radius: 8 });
@@ -42,10 +42,16 @@ function managerContent(node: Element): Element | null {
 }
 
 function Panel({ status, action, logs }: { status: Status; action: Act; logs: LogsState }) {
-  const [screen, setScreen] = useState<Screen>('dashboard');
-  const [removeId, setRemoveId] = useState('');
-  const [url, setUrl] = useState('');
-  const [folder, setFolder] = useState(status.modelsDir || '');
+  const [ui, setUi] = useState(() => initialState(status));
+  const { screen, removeId, url, folder } = ui;
+  const setRemoveId = (removeId: string) => setUi(current => ({ ...current, removeId }));
+  const setUrl = (url: string) => setUi(current => ({ ...current, url }));
+  const setFolder = (folder: string) => setUi(current => ({ ...current, folder }));
+  const send = (name: string, payload?: unknown) => {
+    const next = transition(ui, status, name, payload, logs);
+    setUi(next.state);
+    for (const effect of next.effects) action(effect.action as Action, effect.payload as string | undefined);
+  };
   const [cursor, setCursor] = useState<Cursor | null>(null);
   const root = useRef<HTMLElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -59,25 +65,9 @@ function Panel({ status, action, logs }: { status: Status; action: Act; logs: Lo
   }, [removeId, status.models]);
   useEffect(() => { if (removeId) root.current?.querySelector<HTMLButtonElement>('[data-om-action="cancel-remove"]')?.focus(); }, [removeId]);
 
-  const navigate = (next: string, refreshLogs = false) => {
-    if (next !== 'dashboard' && next !== 'models' && next !== 'logs') return;
-    setRemoveId(''); setScreen(next);
-    if (next === 'models') action('refresh');
-    if (next === 'logs' && (refreshLogs || logs.state === 'idle')) action('logs');
-  };
-  const runControl = (name: Action) => name === 'logs' ? navigate('logs', true) : action(name);
-  const dispatch = (name: string, payload?: unknown) => {
-    const id = typeof payload === 'string' ? payload : '';
-    if (name === 'cancel-remove') { setRemoveId(''); return; }
-    if (name === 'request-remove' || name === 'confirm-remove') {
-      const model = status.models?.find(model => model.id === id);
-      if (status.busy || !model || removalReason(model, status)) return;
-      if (name === 'request-remove') setRemoveId(id);
-      else if (removeId === id) { setRemoveId(''); action('remove', id); }
-      return;
-    }
-    if (['use', 'fetch'].includes(name)) action(name as Action, id);
-  };
+  const navigate = (next: string, refreshLogs = false) => send(refreshLogs && next === 'logs' ? 'logs' : 'navigate', next);
+  const runControl = (name: Action) => send(name);
+  const dispatch = (name: string, payload?: unknown) => send(name, payload);
   const activate = (row: number, index: number) => {
     if (row === 1) { const tab = tabs[index]; if (tab) { navigate(tab.id); root.current?.querySelector<HTMLButtonElement>(`#tabs-pain-${tab.id}`)?.focus(); } }
     else if (index === state.actions.length) { if (!status.busy) action('refresh'); }
@@ -111,8 +101,8 @@ function Panel({ status, action, logs }: { status: Status; action: Act; logs: Lo
     }
   };
   const disabled = !!status.busy;
-  const submitUrl = (event: FormEvent) => { event.preventDefault(); if (!disabled && status.runtimeReady !== false) action('download', url); };
-  const submitFolder = (event: FormEvent) => { event.preventDefault(); if (!disabled) action('folder', folder); };
+  const submitUrl = (event: FormEvent) => { event.preventDefault(); send('download'); };
+  const submitFolder = (event: FormEvent) => { event.preventDefault(); send('folder'); };
   const managerTree = managerContent(view({ ...status, memory: status.memoryCapacity ?? (typeof status.memory === 'number' ? status.memory : undefined) }, { platform: 'mac', removeId }))!;
 
   return <section ref={root} className="panel" tabIndex={-1} aria-label="PAIN" onKeyDown={handleKey}>
