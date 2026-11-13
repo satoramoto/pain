@@ -38,7 +38,7 @@ async function checkUpdates() {
 }
 async function installUpdate() {
   if (updateBusy) return;
-  if (busy) {updateState.error = 'Wait for the current PAIN operation to finish before restarting.';render();return;}
+  if (busy) {updateState.error = 'Wait for the current pain(less) operation to finish before restarting.';render();return;}
   updateBusy = true;
   try {
     if (updateState.phase !== 'restart') {

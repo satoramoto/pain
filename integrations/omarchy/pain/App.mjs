@@ -1,4 +1,4 @@
-// The sole PAIN application layout, rendered by Zen on both browser and Qt.
+// The sole pain(less) application layout, rendered by Zen on both browser and Qt.
 import { element, column, row, text, button, control } from './.generated/application.mjs';
 import { panelState, known, clamp01 } from './.generated/model.mjs';
 import { view as modelManager, guide } from './Panel.mjs';
@@ -94,12 +94,12 @@ export function appView(status, ui, logs = { state: 'idle', content: '' }, capab
   const state = panelState(status, { platform: 'mac' });
   const toolbar = surface('', [
     row([
-      element('hero', { label: 'PAIN', detail: state.detail, meta: state.meta, icon: 'brain', grow: true, active: state.generating || state.busy }),
+      element('hero', { label: 'pain(less)', detail: state.detail, meta: state.meta, icon: 'brain', grow: true, active: state.generating || state.busy }),
       action('?', capabilities.guide ? 'guide' : 'getting-started', { variant: 'quiet', title: 'Getting Started', width:28 }),
-      action('Quit', 'quit', { variant: 'quiet', title: 'Quit PAIN; inference keeps running' }),
+      action('Quit', 'quit', { variant: 'quiet', title: 'Quit pain(less); inference keeps running' }),
     ]),
     row([
-      element('tabs', { label: 'PAIN', options: tabs.map(tab => ({ label: tab.label, value: tab.id })), value: ui.screen === 'guide' ? 'dashboard' : ui.screen, action: 'navigate', grow: true }),
+      element('tabs', { label: 'pain(less)', options: tabs.map(tab => ({ label: tab.label, value: tab.id })), value: ui.screen === 'guide' ? 'dashboard' : ui.screen, action: 'navigate', grow: true }),
     ]),
     row(state.actions.map(item => element(item.key === 'up' && capabilities.backendSelection ? 'split-button' : 'button', {
       label:item.label, action:item.key, icon:item.key,
@@ -114,5 +114,5 @@ export function appView(status, ui, logs = { state: 'idle', content: '' }, capab
   ].filter(Boolean), { layer: 'float', key: 'toolbar' });
   const content = ui.screen === 'guide' ? surface('', [guide(status, ui)]) : ui.screen === 'models' ? models(status, ui)
     : ui.screen === 'logs' ? logView(logs) : dashboard(status, state);
-  return element('application', { label: 'PAIN', screen: ui.screen, width: 460 }, [toolbar, content]);
+  return element('application', { label: 'pain(less)', screen: ui.screen, width: 460 }, [toolbar, content]);
 }

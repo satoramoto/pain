@@ -1,6 +1,6 @@
 {
   "identifier": "main",
-  "description": "PAIN's local control window",
+  "description": "pain(less)'s local control window",
   "windows": [
     "main"
   ],

@@ -44,3 +44,7 @@ check; do not start parallel builds against the same Cargo target directory.
 The Omarchy plugin validator rejects symlinks inside plugins. `scripts/prepare-ui.mjs`
 materializes the pinned Zen kit in the ignored `.generated/` directory; keep that
 directory concrete and run `omarchy plugin validate integrations/omarchy/pain` before shipping native UI changes.
+
+For native control geometry changes, also capture with `PAIN_PREVIEW_RADIUS=12`
+and `PAIN_PREVIEW_OUTPUT_DIR=.build/rounded-captures`. Offscreen defaults use
+square corners and can hide split-button seams seen in the live shell.

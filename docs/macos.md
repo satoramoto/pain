@@ -1,6 +1,6 @@
 # Apple Silicon QA
 
-PAIN runs Linux ARM64 llama-server in a dedicated Podman/libkrun VM. VirtGPU
+pain(less) runs Linux ARM64 llama-server in a dedicated Podman/libkrun VM. VirtGPU
 forwards computation to llama.cpp's real Metal backend in the Mac virtualization
 process. The host APIR libraries cannot live inside the Linux container, so the
 Mac runtime artifact bundles them alongside a private krunkit and its dynamic
@@ -8,7 +8,7 @@ library dependencies. It does not replace system or Homebrew libraries.
 
 The Mac QA workflow builds two artifacts from this branch:
 
-- `pain-macos-app-arm64`: a Tauri DMG, including the runtime archive and PAIN's
+- `pain-macos-app-arm64`: a Tauri DMG, including the runtime archive and pain(less)'s
   controller sources. Use this for the tray application.
 - `pain-macos-runtime-arm64`: the runtime tarball and SHA-256 file. Use this with
   a Git checkout when testing the CLI or changing code locally.
@@ -23,15 +23,15 @@ checks only validate the container and cross-platform application code.
 1. Install the official Podman macOS package (the permitted virtualization
    dependency). No host Python, CMake, Rust, Node, or inference service is needed.
 2. Download the app artifact from the **Mac QA** workflow for this branch. Open
-   the DMG and copy PAIN to Applications. macOS may require Open Anyway for this
+   the DMG and copy pain(less) to Applications. macOS may require Open Anyway for this
    unsigned-distribution QA build.
-3. Open PAIN and follow **Getting Started** to prepare the private runtime, VM
+3. Open pain(less) and follow **Getting Started** to prepare the private runtime, VM
    and starter model. The first setup requires internet access for the Linux
    image, model and containers.
 4. Open **Models** to download another supported preset or add an HTTPS GGUF
    URL. Choose **Use** to start a downloaded model. Models are stored in
    `~/Models` unless you change the folder in the model manager.
-5. Use the menu-bar PAIN entry to reopen the window. Closing the window hides it;
+5. Use the menu-bar pain(less) entry to reopen the window. Closing the window hides it;
    quitting the UI keeps inference running. Use **Stop** to stop inference.
 
 The tray reports inference state/context and measured generation speed. A native
@@ -150,13 +150,15 @@ checkout you want to try:
 
 The script verifies the cached runtime, installs JavaScript dependencies if
 missing, stages the current controller sources, and builds the Apple Silicon
-app with an ad-hoc signature for local QA. It quits the old PAIN window/tray and replaces `/Applications/PAIN.app`
+app with an ad-hoc signature for local QA. It quits the old pain(less) window/tray and replaces `/Applications/pain(less).app`
 only after the new bundle passes signature verification. The VM, inference,
-models and application settings stay in place. Open PAIN from Applications
+models and application settings stay in place. Older installs named `PAIN.app`
+can be removed after verifying `pain(less).app`; both use the same application ID
+and existing data. Open pain(less) from Applications
 when it finishes. It does not build a DMG or rebuild the Metal runtime.
 
 An optional absolute destination is supported, for example
-`./integrations/macos/rebuild-install "$HOME/Applications/PAIN.app"`.
+`./integrations/macos/rebuild-install "$HOME/Applications/pain(less).app"`.
 Temporary installation files are cleaned from `~/.syns/scratch/pain/`; a failed
 replacement restores the previous app when possible and reports any backup
 that needs attention.
@@ -200,7 +202,7 @@ serves it on port 6016. Linux Tauri distribution is deliberately not configured.
 
 ## Getting Started in the app
 
-On first launch, PAIN opens **Getting Started**. Reopen it with **Help → Getting
+On first launch, pain(less) opens **Getting Started**. Reopen it with **Help → Getting
 Started**, the tray menu, or the dashboard button. **Set up my Mac** runs the
 whole default sequence: install/reuse Podman, unpack the private APIR runtime,
 boot the VM, download Qwen3 4B Q4_K_M (about 2.5 GB), start llama.cpp, and
@@ -216,15 +218,15 @@ No host Homebrew, Node or Python installation is required.
 
 **Docker Desktop** is an alternative for CPU inference. Setup downloads the
 Apple Silicon Docker app if missing, verifies it with Gatekeeper, then opens
-Docker Desktop. Accept its license and finish its first-run prompts. PAIN uses
+Docker Desktop. Accept its license and finish its first-run prompts. pain(less) uses
 the explicit `desktop-linux` context without changing Docker's global context.
 The controller runs in a sibling container and accesses the Docker socket.
 Stop the current engine before choosing a different framework.
 
 OpenCode is reused when found on the application PATH; otherwise its official
-Apple Silicon binary is installed in PAIN's private data directory. Both V1 and
+Apple Silicon binary is installed in pain(less)'s private data directory. Both V1 and
 V2 configuration formats are supported. **Open OpenCode** opens Terminal using
-PAIN's `OpenCode.command` launcher. It injects a private `opencode.json` through
+pain(less)'s `OpenCode.command` launcher. It injects a private `opencode.json` through
 `OPENCODE_CONFIG`, selecting the local provider. Your global config, credentials
 and normal `opencode` invocation are unchanged. This launcher starts in your
 home directory; navigate to your project when using OpenCode.
@@ -232,7 +234,7 @@ home directory; navigate to your project when using OpenCode.
 ### Onboarding QA
 
 - Fresh Apple Silicon Mac: accept defaults, approve the macOS installer prompt,
-  and verify all five steps finish and OpenCode can generate using PAIN.
+  and verify all five steps finish and OpenCode can generate using pain(less).
 - Existing Podman/OpenCode: verify setup reuses them and leaves global configs
   intact. Cancel an installation or interrupt a download, then retry.
 - Docker: complete first-run prompts, verify CPU inference, stop it, and switch
@@ -278,9 +280,9 @@ verification in run `43369465341`. Installation and inference still need Mac QA.
 ## App updates
 
 Open **Help → Check for Updates…**, or right-click the brain in the menu bar
-and choose **Check for Updates…**. PAIN checks the latest stable release on
+and choose **Check for Updates…**. pain(less) checks the latest stable release on
 `satoramoto/pain`. Select **Install and restart** to download, verify and install
-it. No download or restart happens before that selection. Run PAIN from
+it. No download or restart happens before that selection. Run pain(less) from
 `/Applications`, not directly from a mounted DMG.
 
 The updater uses Tauri signature verification in addition to Apple's code

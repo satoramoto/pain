@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "local.pain",
-  "name": "PAIN",
+  "name": "pain(less)",
   "version": "1.1.0",
-  "author": "PAIN",
+  "author": "pain(less)",
   "description": "Local AI engine controls with live inference, memory, and APU telemetry",
   "kinds": [
     "bar-widget"
@@ -12,7 +12,7 @@
     "barWidget": "Widget.qml"
   },
   "barWidget": {
-    "displayName": "PAIN",
+    "displayName": "pain(less)",
     "description": "Local AI engine controls with live inference, memory, and APU telemetry",
     "category": "System",
     "allowMultiple": false,

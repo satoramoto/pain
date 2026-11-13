@@ -24,4 +24,4 @@ if shell_config.exists():
     shutil.copy2(shell_config, shell_config.with_name(f'shell.json.pain-backup-{stamp}'))
 subprocess.run(['omarchy-shell', 'shell', 'rescanPlugins'], check=True)
 subprocess.run(['omarchy', 'plugin', 'enable', 'local.pain', '--section', 'right'], check=True)
-print(f'PAIN linked to {source}. Edit this checkout directly.')
+print(f'pain(less) linked to {source}. Edit this checkout directly.')

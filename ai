@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PAIN: local inference setups, presets, and reproducible timing experiments."""
+"""pain(less): local inference setups, presets, and reproducible timing experiments."""
 import argparse
 from contextlib import contextmanager
 import datetime as dt
@@ -70,7 +70,7 @@ def compose(*args, selected=None, capture=False, timeout=None):
     if args and args[0] not in ('config', 'build', 'pull') and RUNTIME_STATE.exists():
         previous = RUNTIME_STATE.read_text().strip()
         if previous != runtime():
-            raise ValueError(f'PAIN belongs to {previous}. Run PAIN_RUNTIME={previous} ./ai down before switching runtimes.')
+            raise ValueError(f'pain(less) belongs to {previous}. Run PAIN_RUNTIME={previous} ./ai down before switching runtimes.')
     env = config()
     if selected in comfy_backend.BACKENDS:
         env = comfy_backend.environment(env)
@@ -111,7 +111,7 @@ def container():
     try:
         cid = compose('ps', '-q', capture=True).stdout.strip()
         if not cid:
-            raise ValueError('PAIN is not running. Start it with ./ai up <backend>.')
+            raise ValueError('pain(less) is not running. Start it with ./ai up <backend>.')
         details = json.loads(subprocess.check_output([runtime(), 'inspect', cid], text=True))[0]
     except (OSError, subprocess.CalledProcessError) as exc:
         try:
@@ -124,7 +124,7 @@ def container():
                 with urllib.request.urlopen(req, timeout=3) as res:
                     pass
         except Exception:
-            raise ValueError('PAIN is not running. Start it with ./ai up <backend>.') from exc
+            raise ValueError('pain(less) is not running. Start it with ./ai up <backend>.') from exc
         if CONTAINER_STATE.exists():
             details = json.loads(CONTAINER_STATE.read_text())
         else:
@@ -180,7 +180,7 @@ def up(name, device=None):
         else:
             raise ValueError(f'llama-server on port {port} not ready after 90 seconds. Inspect ./ai logs.')
         sync_opencode()
-        print(f'PAIN ready: {name}, llama.cpp server, localhost:{port}')
+        print(f'pain(less) ready: {name}, llama.cpp server, localhost:{port}')
     else:
         while time.monotonic() < deadline:
             try:
@@ -198,13 +198,13 @@ def up(name, device=None):
             print(f'Applying preset: {preset}', flush=True)
             apply(preset)
         sync_opencode()
-        print(f'PAIN ready: {name}, Ollama {version}, localhost:{config().get("PAIN_PORT", "11434")}')
+        print(f'pain(less) ready: {name}, Ollama {version}, localhost:{config().get("PAIN_PORT", "11434")}')
         print('All presets applied. Open OpenCode and select a model with /models.')
 
 def up_comfyui(name):
     cfg = config()
     comfy_backend.check_host(name, cfg)
-    print(f'[PAIN] Selected {name}: {comfy_backend.url(cfg)}', flush=True)
+    print(f'[pain(less)] Selected {name}: {comfy_backend.url(cfg)}', flush=True)
     compose('config', '-q', selected=name)
     compose('pull', 'engine', selected=name)
     # A separate short-lived probe uses the selected image and GPU reservation.
@@ -232,7 +232,7 @@ def up_comfyui(name):
             time.sleep(1)
             continue
         comfy_backend.validate_stats(stats)
-        print(f'PAIN ready: {name}. Open {comfy_backend.url(cfg)}')
+        print(f'pain(less) ready: {name}. Open {comfy_backend.url(cfg)}')
         print('Models, workflows and images persist in ' + comfy_backend.environment(cfg)['PAIN_COMFYUI_DATA_DIR'])
         return
     raise ValueError('ComfyUI not ready after 180 seconds. Inspect ./ai logs; ./ai down stops it.')
@@ -245,7 +245,7 @@ def remove_probe(name):
         subprocess.run([runtime(), 'rm', '-f', name], env=config(), check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
-        print(f'PAIN: could not clean up GPU probe {name}; inspect Docker.', file=sys.stderr)
+        print(f'pain(less): could not clean up GPU probe {name}; inspect Docker.', file=sys.stderr)
 
 
 def require_llm(command):
@@ -322,7 +322,7 @@ def checked_model_path(path, weight=False):
     for part in relative.parts:
         current = current / part
         if current.is_symlink():
-            raise ValueError(f'{current.name} is a symbolic link; manage it outside PAIN.')
+            raise ValueError(f'{current.name} is a symbolic link; manage it outside pain(less).')
     if path.exists() and not path.is_file():
         raise ValueError(f'{path.name} is not a regular file.')
     return relative
@@ -338,7 +338,7 @@ def model_operation():
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise ValueError('Another PAIN model or engine operation is in progress.') from None
+            raise ValueError('Another pain(less) model or engine operation is in progress.') from None
         yield
 
 
@@ -362,7 +362,7 @@ def removal_files(name, available=None):
     for filename in (SELECTED, 'models.ini'):
         checked_model_path(models_dir() / filename)
     if RUNTIME_STATE.exists() or CONTAINER_STATE.exists():
-        raise ValueError('Stop the PAIN engine before removing model files.')
+        raise ValueError('Stop the pain(less) engine before removing model files.')
     return candidates
 
 
@@ -396,10 +396,10 @@ def remove_model(name):
                                                int(cfg.get('PAIN_PORT', '11434'))), timeout=2)
     except OSError as exc:
         if exc.errno != errno.ECONNREFUSED:
-            raise ValueError('Could not confirm the PAIN engine is stopped. Try again after stopping it.') from exc
+            raise ValueError('Could not confirm the pain(less) engine is stopped. Try again after stopping it.') from exc
     else:
         connection.close()
-        raise ValueError('Stop the PAIN engine before removing model files.')
+        raise ValueError('Stop the pain(less) engine before removing model files.')
     changed = False
     try:
         for file in files:
@@ -535,7 +535,7 @@ def generate_models_ini():
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    print(f'[PAIN] Generated router presets: {ini_path}', flush=True)
+    print(f'[pain(less)] Generated router presets: {ini_path}', flush=True)
 
 
 def sync_opencode():
@@ -546,7 +546,7 @@ def sync_opencode():
     try:
         data = json.loads(opencode_cfg.read_text())
     except Exception as exc:
-        print(f'[PAIN] Warning: Could not parse opencode.json: {exc}', file=sys.stderr)
+        print(f'[pain(less)] Warning: Could not parse opencode.json: {exc}', file=sys.stderr)
         return
 
     provider = data.setdefault('provider', {}).setdefault('pain', {})
@@ -587,7 +587,7 @@ def sync_opencode():
         }
 
     opencode_cfg.write_text(json.dumps(data, indent=2) + '\n')
-    print(f'[PAIN] OpenCode synced: {len(models)} models available under provider "pain"', flush=True)
+    print(f'[pain(less)] OpenCode synced: {len(models)} models available under provider "pain"', flush=True)
 
 
 def apply(name):
@@ -675,17 +675,17 @@ def dedupe_ollama_import(name, modelfile_content):
     store = models_dir() / 'ollama'
     layer = ollama_model_layer(find_ollama_manifest(store, name))
     if not layer:
-        print(f'[PAIN] Warning: no Ollama manifest layer for {name}; '
+        print(f'[pain(less)] Warning: no Ollama manifest layer for {name}; '
               'not deduplicating.', file=sys.stderr)
         return
     digest = layer.get('digest', '').split(':', 1)[-1]
     blob = store / 'blobs' / f'sha256-{digest}'
     if not blob.exists():
-        print(f'[PAIN] Warning: Ollama blob {digest[:12]} is missing; '
+        print(f'[pain(less)] Warning: Ollama blob {digest[:12]} is missing; '
               'not deduplicating.', file=sys.stderr)
         return
     if path.stat().st_size != blob.stat().st_size:
-        print(f'[PAIN] Warning: size mismatch for {name}; not deduplicating.',
+        print(f'[pain(less)] Warning: size mismatch for {name}; not deduplicating.',
               file=sys.stderr)
         return
     if path.stat().st_ino == blob.stat().st_ino:
@@ -698,9 +698,9 @@ def dedupe_ollama_import(name, modelfile_content):
         except (OSError, subprocess.CalledProcessError):
             pass
     if path.stat().st_ino == blob.stat().st_ino:
-        print(f'[PAIN] Deduplicated Ollama import for {name} (hardlink).')
+        print(f'[pain(less)] Deduplicated Ollama import for {name} (hardlink).')
     else:
-        print(f'[PAIN] Warning: could not hardlink {name}; left the copy in place.',
+        print(f'[pain(less)] Warning: could not hardlink {name}; left the copy in place.',
               file=sys.stderr)
 
 
@@ -766,9 +766,9 @@ def download_file(url, destination, expected_sha256=None, force=False):
             if sha256_file(destination).lower() != expected_sha256.lower():
                 raise ValueError(f'{destination} exists but its SHA-256 does not match; '
                                  'use --force to replace it.')
-            print(f'[PAIN] {destination} already exists and matches SHA-256.')
+            print(f'[pain(less)] {destination} already exists and matches SHA-256.')
         else:
-            print(f'[PAIN] {destination} already exists; use --force to replace it.')
+            print(f'[pain(less)] {destination} already exists; use --force to replace it.')
         return destination
     part = destination.with_name(destination.name + '.part')
     offset = part.stat().st_size if part.exists() else 0
@@ -831,7 +831,7 @@ def download_file(url, destination, expected_sha256=None, force=False):
         part.unlink()
         raise ValueError(f'SHA-256 mismatch for {url}')
     os.replace(part, destination)
-    print(f'[PAIN] {destination} ({destination.stat().st_size / 1e9:.2f} GB)')
+    print(f'[pain(less)] {destination} ({destination.stat().st_size / 1e9:.2f} GB)')
     return destination
 
 
@@ -857,10 +857,10 @@ def pull_ollama(tag, name=None, force=False):
     destination = models_dir() / model_filename(
         name or tag.replace(':', '-').replace('/', '_'))
     if destination.exists() and not force:
-        print(f'[PAIN] {destination} already exists; use --force to replace it.')
+        print(f'[pain(less)] {destination} already exists; use --force to replace it.')
         return destination
     if try_hardlink(blob, destination):
-        print(f'[PAIN] {destination} (hardlink to Ollama blob {digest[:12]})')
+        print(f'[pain(less)] {destination} (hardlink to Ollama blob {digest[:12]})')
         return destination
     # The Ollama store is root-owned; link from inside a throwaway container.
     try:
@@ -872,10 +872,10 @@ def pull_ollama(tag, name=None, force=False):
     except (OSError, subprocess.CalledProcessError):
         pass
     if destination.exists() and blob.stat().st_ino == destination.stat().st_ino:
-        print(f'[PAIN] {destination} (hardlink to Ollama blob {digest[:12]})')
+        print(f'[pain(less)] {destination} (hardlink to Ollama blob {digest[:12]})')
     else:
         shutil.copy2(blob, destination)
-        print(f'[PAIN] {destination} (copied from Ollama blob {digest[:12]})')
+        print(f'[pain(less)] {destination} (copied from Ollama blob {digest[:12]})')
     return destination
 
 
@@ -889,7 +889,7 @@ def pull(source, name=None, sha256=None, force=False):
         if sha256:
             raise ValueError('--sha256 only applies to URL and Hugging Face downloads.')
         result = pull_ollama(source, name=name, force=force)
-    print(f'[PAIN] Preset source: FROM /models/{result.name}')
+    print(f'[pain(less)] Preset source: FROM /models/{result.name}')
     return result
 
 
@@ -1094,7 +1094,7 @@ def lab(args):
     if args.lab_command == 'build':
         subprocess.run([runtime(), 'build', '-t', 'pain-lab',
                         '-f', str(ROOT / 'lab' / 'Dockerfile'), str(ROOT / 'lab')], check=True)
-        print(f'PAIN lab image ready: {lab_image_id()}')
+        print(f'pain(less) lab image ready: {lab_image_id()}')
         return
     if args.lab_command == 'ps':
         result = subprocess.run(
@@ -1111,10 +1111,10 @@ def lab(args):
     if args.lab_command == 'shell':
         subprocess.run(argv, check=False)
         return
-    print(f'[PAIN lab] image {record["image_id"]}', flush=True)
-    print(f'[PAIN lab] code {record["code_dir"]} seed={record["seed"]} threads={record["threads"]}',
+    print(f'[pain(less) lab] image {record["image_id"]}', flush=True)
+    print(f'[pain(less) lab] code {record["code_dir"]} seed={record["seed"]} threads={record["threads"]}',
           flush=True)
-    print(f'[PAIN lab] running: {" ".join(args.cmd)}', flush=True)
+    print(f'[pain(less) lab] running: {" ".join(args.cmd)}', flush=True)
     started = time.monotonic()
     completed = subprocess.run(argv, check=False)
     record['exit_code'] = completed.returncode
@@ -1123,7 +1123,7 @@ def lab(args):
     runs.parent.mkdir(parents=True, exist_ok=True)
     with runs.open('a') as out:
         out.write(json.dumps(record) + '\n')
-    print(f'[PAIN lab] exit {completed.returncode}; provenance: {runs}', flush=True)
+    print(f'[pain(less) lab] exit {completed.returncode}; provenance: {runs}', flush=True)
     if completed.returncode:
         raise ValueError(f'lab run failed with exit code {completed.returncode}')
 
@@ -1278,5 +1278,5 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         sys.exit(130)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
-        print(f'PAIN: {exc}', file=sys.stderr)
+        print(f'pain(less): {exc}', file=sys.stderr)
         sys.exit(1)

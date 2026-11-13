@@ -19,7 +19,7 @@ try {
   for(const renderer of ['tauri','omarchy']) for(const state of ['offline','ready','generating','starting','failure']) {
     await page.goto(`${origin}/iframe.html?id=tray-${renderer}--${state}&viewMode=story`);
     if(renderer==='tauri') {
-      await expect(page.getByRole('heading',{name:'PAIN',exact:true})).toBeVisible();
+      await expect(page.getByRole('heading',{name:'pain(less)',exact:true})).toBeVisible();
       if(state==='offline') {await expect(page.getByRole('button',{name:'Start',exact:true})).toBeEnabled();await expect(page.getByRole('button',{name:'Stop',exact:true})).toHaveAttribute('aria-disabled','true');}
       if(state==='starting') await expect(page.getByRole('button',{name:'Starting…',exact:true})).toHaveAttribute('aria-disabled','true');
       if(state==='generating') await expect(page.getByText('24.5 tok/s').first()).toBeVisible();

@@ -62,7 +62,7 @@
       "llamacpp-cpu"
     ],
     "online": false,
-    "error": "No VirtGPU Metal device enumerated. Check the PAIN runtime and restart the VM.",
+    "error": "No VirtGPU Metal device enumerated. Check the pain(less) runtime and restart the VM.",
     "runtimeReady": true
   }
 }

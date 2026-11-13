@@ -1,10 +1,10 @@
 export type Framework = 'podman' | 'docker';
 export const steps = [
-  ['dependencies', 'Install the essentials', 'Reuse your container runtime, or install it. Everything else stays inside PAIN.'],
+  ['dependencies', 'Install the essentials', 'Reuse your container runtime, or install it. Everything else stays inside pain(less).'],
   ['machine', 'Prepare your workspace', 'Boot the virtual machine and prepare the inference tools.'],
   ['model', 'Download a starter model', 'Qwen3 4B · Q4_K_M · about 2.5 GB. A small starting point; add larger models later.'],
   ['engine', 'Start local inference', 'Start llama.cpp and check that it answers on localhost:11434.'],
-  ['opencode', 'Connect OpenCode', 'Reuse OpenCode or install a private copy, then create a separate PAIN configuration.'],
+  ['opencode', 'Connect OpenCode', 'Reuse OpenCode or install a private copy, then create a separate pain(less) configuration.'],
 ] as const;
 export type Step = typeof steps[number][0];
 export interface SetupState { framework: Framework; running: boolean; completed: Step[]; current?: Step; error?: string; done?: boolean; }
@@ -25,9 +25,9 @@ export async function runSetup(state: SetupState, execute: (step: Step, framewor
 }
 export function onboarding(state: SetupState, start: () => void, change: (framework: Framework) => void, close: () => void, launch: () => void) {
   const el = document.createElement('section'); el.className = 'onboarding';
-  el.innerHTML = `<header><span class="mark" aria-hidden="true">◈</span><span class="eyebrow">PAIN / GETTING STARTED</span></header>
+  el.innerHTML = `<header><span class="mark" aria-hidden="true">◈</span><span class="eyebrow">pain(less) / GETTING STARTED</span></header>
     <h1>Your Mac.<br>Your models.</h1><p class="intro">A private AI workspace, ready when you are.</p>
-    <p class="explanation">PAIN runs llama.cpp in a container. Your models stay on your Mac; OpenCode connects to it locally to help you work on code.</p>
+    <p class="explanation">Making agentic coding with local AI as painless as possible. pain(less) runs llama.cpp in a container. Your models stay on your Mac; OpenCode connects to it locally to help you work on code.</p>
     <fieldset><legend>Choose your container framework</legend>
       <label class="choice"><input type="radio" name="framework" value="podman"><span><b>Podman <em>Recommended</em></b><small>Apple GPU · experimental Metal acceleration</small></span></label>
       <label class="choice"><input type="radio" name="framework" value="docker"><span><b>Docker Desktop</b><small>CPU only on Mac · slower, uses your existing Docker setup</small></span></label>

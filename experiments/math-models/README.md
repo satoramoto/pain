@@ -1,12 +1,12 @@
 # Math model experiments
 
-Three opt-in profiles for comparison with `qwen38-q8-tuned` on PAIN's Vulkan
+Three opt-in profiles for comparison with `qwen38-q8-tuned` on pain(less)'s Vulkan
 backend. These files are outside `models/`, so ordinary startup does not download
 them. No changes to the shared launcher, runtime, or tuned Qwen preset are needed.
 
 ## Candidates
 
-| PAIN preset after activation | Weight download | Purpose |
+| pain(less) preset after activation | Weight download | Purpose |
 |---|---:|---|
 | `minicpm5-math-q8-experimental` | 2.68 GB / 2.50 GiB | Inexpensive first trial of a small math specialist |
 | `muse-glimmer-q4-experimental` | 19.65 GB / 18.30 GiB | Scientific coding and reasoning comparison |
@@ -20,7 +20,7 @@ weight downloads to the existing Docker volume. Runtime memory is additional.
 
 ## Activate one profile
 
-From the PAIN repo root, copy only the experiment you want into the active
+From the pain(less) repo root, copy only the experiment you want into the active
 library, then apply it:
 
 ```sh
@@ -51,7 +51,7 @@ sudo ./ai apply nemotron-cascade2-q4-experimental
 Profiles use 64k context, 512 prompt batch, 16 CPU threads and **speculation off**.
 The Qwen-specific MTP4 optimization is not assumed to transfer to these models.
 Sampling follows each model card where specified, with extra default filtering
-and repetition penalties disabled. `num_predict=8192` is a PAIN experiment
+and repetition penalties disabled. `num_predict=8192` is a pain(less) experiment
 budget, not a publisher recommendation: it caps total generated reasoning and
 answer tokens and may truncate difficult proofs. Increase it for quality trials
 when needed; a longer budget can take minutes at local generation rates.

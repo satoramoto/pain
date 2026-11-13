@@ -49,7 +49,7 @@ export function view(status, ui = {}) {
 export function guide(status, ui = {}) {
   return column([
     row([text('Getting Started', { grow: true }), actionButton(ui, 'Back', 'dashboard')]),
-    text('Your private AI workspace', { detail: 'PAIN runs models on this computer and serves them locally.' }),
+    text('Making agentic coding with local AI as painless as possible', { detail: 'pain(less) runs models on this computer and serves them locally.' }),
     section('1 · Choose a backend', [text('Use the Engine backend selector. Start applies the selected backend; Restart replaces the running engine.')]),
     section('2 · Choose a model', [text('Open Models to download a supported model, resume a partial download, or use a model already on disk.'), row([actionButton(ui, 'Models', 'models')])]),
     section('3 · Start local inference', [text('Return to the dashboard and press Start. Inference, memory, and hardware readings update while the panel is open.')]),

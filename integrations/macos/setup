@@ -8,4 +8,4 @@ if ! podman machine inspect pain-metal >/dev/null 2>&1; then
     --disk-size "${PAIN_VM_DISK:-60}" pain-metal
 fi
 "$root/integrations/macos/start-machine"
-printf 'PAIN VM is ready. Start inference with: %s/integrations/macos/ai up llamacpp-metal\n' "$root"
+printf 'pain(less) VM is ready. Start inference with: %s/integrations/macos/ai up llamacpp-metal\n' "$root"

@@ -147,7 +147,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           # Keep the feed invisible until every asset is uploaded successfully.
-          gh release create "$RELEASE_TAG" --verify-tag --draft --title "PAIN $RELEASE_TAG" --generate-notes
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "pain(less) $RELEASE_TAG" --generate-notes
           gh release upload "$RELEASE_TAG" .build/update/* desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           gh release edit "$RELEASE_TAG" --draft=false --latest
       - name: Remove signing credentials
