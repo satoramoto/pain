@@ -1,7 +1,7 @@
 // The sole PAIN application layout, rendered by Zen on both browser and Qt.
-import { element, column, row, text, button, control } from './.generated/ui.mjs';
+import { element, column, row, text, button, control } from './.generated/application.mjs';
 import { panelState, known, clamp01 } from './.generated/model.mjs';
-import { view as modelManager } from './Panel.mjs';
+import { view as modelManager, guide } from './Panel.mjs';
 import { tabs } from './AppState.mjs';
 
 const surface = (label, children, props = {}) => element('surface', Object.assign({ label }, props), children);
@@ -28,7 +28,7 @@ function dashboard(status, presentation) {
     hardware.thermals !== 'Unavailable' ? pair('Thermals', hardware.thermals) : null,
   ].filter(Boolean);
   return column([
-    presentation.online ? surface('Inference', [
+    status.engine === 'ComfyUI' ? surface('Image generation', [text(presentation.online ? 'ComfyUI is ready.' : 'ComfyUI is offline.'), text(status.endpoint || '', { tone: 'muted' }), text('Image models and workflows are managed in ComfyUI.', { tone: 'muted' })]) : presentation.online ? surface('Inference', [
       pair('Model', model ? model.title : data.model), pair('Prompt', data.prompt),
       pair('Draft', data.draft), pair('Speed', data.speed),
       meter('Context', data.context, data.fraction, 'normal', presentation.generating),
@@ -46,6 +46,11 @@ function dashboard(status, presentation) {
 }
 
 function models(status, ui) {
+  if (status.engine === 'ComfyUI') return surface('Image models', [
+    text('ComfyUI manages its image models and workflows.'),
+    text(status.endpoint || '', { tone: 'muted' }),
+    text('Choose an LLM backend and start it to manage GGUF models here.', { tone: 'muted' }),
+  ]);
   const busy = !!status.busy;
   const tree = managerContent(modelManager(Object.assign({}, status, {
     memory: status.memoryCapacity || (typeof status.memory === 'number' ? status.memory : undefined),
@@ -54,14 +59,14 @@ function models(status, ui) {
     surface('', [tree]),
     surface('Add a model by URL', [
       row([
-        control('input', 'Model GGUF URL', ui.url, 'edit-url', { grow: true, placeholder: 'https://…/model.gguf', disabled: busy }),
+        control('input', 'Model GGUF URL', ui.url, 'edit-url', { grow: true, placeholder: 'https://…/model.gguf', submit: 'download', disabled: busy }),
         action('Download', 'download', { disabled: busy || status.runtimeReady === false }),
       ]),
       text('Any HTTPS GGUF link. Choose Use after the download finishes.', { tone: 'muted' }),
     ]),
     surface('Models folder', [
       row([
-        control('input', 'Models folder', ui.folder, 'edit-folder', { grow: true, disabled: busy }),
+        control('input', 'Models folder', ui.folder, 'edit-folder', { grow: true, submit: 'folder', disabled: busy }),
         action('Change', 'folder', { disabled: busy }),
       ]),
       text('Inside your home folder. Changing it stops the engine; downloaded files stay in the old folder.', { tone: 'muted' }),
@@ -86,16 +91,17 @@ function logView(logs) {
 }
 
 export function appView(status, ui, logs = { state: 'idle', content: '' }, capabilities = {}) {
-  const state = panelState(status, { platform: capabilities.platform || 'mac' });
+  const state = panelState(status, { platform: 'mac' });
   const toolbar = surface('', [
     row([
       element('hero', { label: 'PAIN', detail: state.detail, meta: state.meta, icon: 'brain', grow: true, active: state.generating || state.busy }),
       action('Quit', 'quit', { variant: 'quiet', title: 'Quit PAIN; inference keeps running' }),
     ]),
     row([
-      element('tabs', { label: 'PAIN', options: tabs.map(tab => ({ label: tab.label, value: tab.id })), value: ui.screen, action: 'navigate', grow: true }),
-      action('Getting Started', 'getting-started', { variant: 'quiet' }),
+      element('tabs', { label: 'PAIN', options: tabs.map(tab => ({ label: tab.label, value: tab.id })), value: ui.screen === 'guide' ? 'dashboard' : ui.screen, action: 'navigate', grow: true }),
+      action('Getting Started', capabilities.guide ? 'guide' : 'getting-started', { variant: 'quiet' }),
     ]),
+    capabilities.backendSelection ? control('select', 'Engine backend', ui.backend || status.backend, 'select-backend', { options: (status.backends || []).map(value => ({ label: value, value })), disabled: !!status.busy }) : null,
     row(state.actions.map(item => action(item.label, item.key, {
       disabled: item.key !== 'logs' && !item.enabled,
       variant: item.key === 'up' ? 'primary' : 'secondary',
@@ -104,7 +110,7 @@ export function appView(status, ui, logs = { state: 'idle', content: '' }, capab
     status.error ? text(status.error, { tone: 'danger', role: 'alert' }) : ui.screen === 'dashboard'
       ? text((state.online ? 'Restart interrupts requests. ' : '') + 'S start · D stop · G logs · R refresh', { tone: 'muted' }) : null,
   ].filter(Boolean), { layer: 'float', key: 'toolbar' });
-  const content = ui.screen === 'models' ? models(status, ui)
+  const content = ui.screen === 'guide' ? surface('', [guide(status, ui)]) : ui.screen === 'models' ? models(status, ui)
     : ui.screen === 'logs' ? logView(logs) : dashboard(status, state);
   return element('application', { label: 'PAIN', screen: ui.screen, width: 460 }, [toolbar, content]);
 }

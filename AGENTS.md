@@ -39,3 +39,7 @@ suite locally or add tests without an agreed contract and a separate test step.
 
 After changes between test passes, use build and compile checks. CI is the final
 check; do not start parallel builds against the same Cargo target directory.
+
+The Omarchy plugin validator rejects symlinks inside plugins. `scripts/prepare-ui.mjs`
+materializes the pinned Zen kit in the ignored `.generated/` directory; keep that
+directory concrete and run `omarchy plugin validate integrations/omarchy/pain` before shipping native UI changes.

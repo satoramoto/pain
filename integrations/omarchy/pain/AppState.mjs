@@ -1,6 +1,6 @@
 // Portable application state. Both hosts dispatch named actions through this
 // reducer; only returned effects may cross into platform services.
-import { removalReason } from './.generated/model.mjs';
+import { removalReason, panelState } from './.generated/model.mjs';
 
 export const tabs = [
   { id: 'dashboard', label: 'Dashboard' },
@@ -9,7 +9,7 @@ export const tabs = [
 ];
 
 export function initialState(status = {}) {
-  return { screen: 'dashboard', removeId: '', url: '', folder: status.modelsDir || '', cursor: null };
+  return { screen: 'dashboard', removeId: '', url: '', folder: status.modelsDir || '', cursor: null, backend: status.backend || '' };
 }
 
 export function transition(current, status, action, payload, logs = { state: 'idle' }) {
@@ -25,7 +25,9 @@ export function transition(current, status, action, payload, logs = { state: 'id
     if (screen === 'logs' && (refreshLogs || logs.state === 'idle')) emit('logs');
   };
   if (action === 'navigate' && tabs.some(tab => tab.id === id)) navigate(id, false);
+  else if (['guide', 'dashboard', 'models'].includes(action)) navigate(action, false);
   else if (action === 'logs') navigate('logs', true);
+  else if (action === 'select-backend' && (status.backends || []).includes(id)) state.backend = id;
   else if (action === 'edit-url') state.url = id;
   else if (action === 'edit-folder') state.folder = id;
   else if (action === 'cancel-remove') state.removeId = '';
@@ -46,6 +48,16 @@ export function transition(current, status, action, payload, logs = { state: 'id
   } else if (action === 'refresh-logs') {
     if (logs.state !== 'loading') emit('logs');
   } else if (action === 'getting-started' || action === 'quit') emit(action);
-  else if (!status.busy && ['up', 'down', 'refresh', 'use', 'fetch'].includes(action)) emit(action, payload);
+  else if (action === 'up' || action === 'down') {
+    const control = panelState(status, { platform: 'mac' }).actions.find(item => item.key === action);
+    if (control && control.enabled) emit(action, action === 'up' ? state.backend : undefined);
+  } else if (!status.busy && ['refresh', 'use', 'fetch'].includes(action)) emit(action, payload);
   return { state, effects };
+}
+
+export function keyAction(state, key) {
+  if (key === 'Escape') return 'escape';
+  if (key.toLowerCase() === 'g') return 'logs';
+  if (state.screen !== 'dashboard') return '';
+  return ({ s: 'up', d: 'down', r: 'refresh' })[key.toLowerCase()] || '';
 }
