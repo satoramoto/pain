@@ -188,3 +188,20 @@ Compose rendering validates configuration without starting a container.
 Future additions: standalone llama.cpp backend, telemetry capture, result
 comparison, and more model families. These can be added without turning each
 parameter combination into a separate Compose setup.
+
+## ComfyUI image generation (Linux)
+
+`./ai up comfyui` detects AMD or NVIDIA and replaces the LLM container with
+ComfyUI at <http://127.0.0.1:8188>. With both vendors present, select
+`--device rocm` or `--device cuda`. ComfyUI is not offered on macOS.
+The default AMD image targets Strix Halo (including the Z13's 8060S); other AMD
+GPUs need a compatible image override. NVIDIA needs Container Toolkit.
+
+A GPU preflight runs before replacing the active engine. Models, workflows,
+custom nodes and generated images stay in `~/.local/share/pain/comfyui` across
+restarts and switches. `./ai up llamacpp-vulkan` switches back. The usual `status`,
+`logs`, and `down` commands work for ComfyUI.
+
+See [ComfyUI setup, image pins, and validation](docs/comfyui.md), including
+MiniMax H3-Image templates and the distinction between automated checks and
+live GPU acceptance.
