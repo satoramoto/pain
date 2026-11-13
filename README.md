@@ -296,3 +296,19 @@ Telemetry polls every 10 seconds while closed and every 2 seconds while open.
 Online means the local inference API responds, not proof of container ownership.
 Keep the checkout in place; if you move it, remove only the old symlink and
 rerun the installer. To hide the integration: `omarchy plugin disable local.pain`.
+## ComfyUI image generation (Linux)
+
+`./ai up comfyui` detects AMD or NVIDIA and replaces the LLM container with
+ComfyUI at <http://127.0.0.1:8188>. With both vendors present, select
+`--device rocm` or `--device cuda`. ComfyUI is not offered on macOS.
+The default AMD image targets Strix Halo (including the Z13's 8060S); other AMD
+GPUs need a compatible image override. NVIDIA needs Container Toolkit.
+
+A GPU preflight runs before replacing the active engine. Models, workflows,
+custom nodes and generated images stay in `~/.local/share/pain/comfyui` across
+restarts and switches. `./ai up llamacpp-vulkan` switches back. The usual `status`,
+`logs`, and `down` commands work for ComfyUI.
+
+See [ComfyUI setup, image pins, and validation](docs/comfyui.md), including
+MiniMax H3-Image templates and the distinction between automated checks and
+live GPU acceptance.

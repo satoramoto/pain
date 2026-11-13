@@ -1,0 +1,11 @@
+services:
+  engine:
+    image: "${PAIN_COMFYUI_CUDA_IMAGE:-ghcr.io/romkey/comfyui-docker:0.45.0-20261111064008-cu128}"
+    shm_size: "8gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

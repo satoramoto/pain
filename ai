@@ -20,13 +20,17 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+
+import comfy_backend
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / '.state' / 'backend'
 CONTAINER_STATE = ROOT / '.state' / 'container.json'
 RUNTIME_STATE = ROOT / '.state' / 'runtime'
 SELECTED = 'models.selected'  # in PAIN_MODELS_DIR; names the preset a single-model engine serves
-BACKENDS = ('rocm', 'vulkan', 'llamacpp-vulkan', 'llamacpp-cpu', 'llamacpp-metal')
+LLM_BACKENDS = ('rocm', 'vulkan', 'llamacpp-vulkan', 'llamacpp-cpu', 'llamacpp-metal')
+BACKENDS = (*LLM_BACKENDS, *comfy_backend.BACKENDS)
 
 
 def config():
@@ -58,21 +62,25 @@ def runtime():
     return name
 
 
-def compose(*args, selected=None, capture=False):
+def compose(*args, selected=None, capture=False, timeout=None):
     selected = selected or backend()
     if args and args[0] not in ('config', 'build', 'pull') and RUNTIME_STATE.exists():
         previous = RUNTIME_STATE.read_text().strip()
         if previous != runtime():
             raise ValueError(f'PAIN belongs to {previous}. Run PAIN_RUNTIME={previous} ./ai down before switching runtimes.')
     env = config()
+    if selected in comfy_backend.BACKENDS:
+        env = comfy_backend.environment(env)
+        comfy_backend.url(env)  # Validate before Docker sees the port.
     env['PAIN_BACKEND'] = selected
     env['PAIN_MODELS_DIR'] = str(models_dir())
-    command = [runtime(), 'compose',
-               '-f', str(ROOT / 'compose.yaml'),
+    base = 'compose.comfyui.yaml' if selected in comfy_backend.BACKENDS else 'compose.yaml'
+    command = [runtime(), 'compose', '--project-directory', str(ROOT),
+               '-f', str(ROOT / base),
                '-f', str(ROOT / 'backends' / f'{selected}.yaml'), *args]
     return subprocess.run(command, cwd=ROOT, env=env, check=True, text=True,
                           stdout=subprocess.PIPE if capture else None,
-                          stderr=subprocess.DEVNULL if capture else None)
+                          stderr=subprocess.DEVNULL if capture else None, timeout=timeout)
 
 
 def api(path, data=None, timeout=1800):
@@ -104,11 +112,14 @@ def container():
         details = json.loads(subprocess.check_output([runtime(), 'inspect', cid], text=True))[0]
     except (OSError, subprocess.CalledProcessError) as exc:
         try:
-            port = int(config().get('PAIN_PORT', '11434'))
-            check_url = f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/health" if backend().startswith('llamacpp') else f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/api/version"
-            req = urllib.request.Request(check_url)
-            with urllib.request.urlopen(req, timeout=3) as res:
-                pass
+            if backend() in comfy_backend.BACKENDS:
+                comfy_backend.validate_stats(comfy_backend.api(config()))
+            else:
+                port = int(config().get('PAIN_PORT', '11434'))
+                check_url = f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/health" if backend().startswith('llamacpp') else f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/api/version"
+                req = urllib.request.Request(check_url)
+                with urllib.request.urlopen(req, timeout=3) as res:
+                    pass
         except Exception:
             raise ValueError('PAIN is not running. Start it with ./ai up <backend>.') from exc
         if CONTAINER_STATE.exists():
@@ -122,7 +133,10 @@ def container():
     return details
 
 
-def up(name):
+def up(name, device=None):
+    name = comfy_backend.resolve(name, device)
+    if name in comfy_backend.BACKENDS:
+        return up_comfyui(name)
     # Ensure the models directory exists
     models_dir()
     # Pull/validate before replacing the working service. One Compose project means
@@ -184,7 +198,57 @@ def up(name):
         print(f'PAIN ready: {name}, Ollama {version}, localhost:{config().get("PAIN_PORT", "11434")}')
         print('All presets applied. Open OpenCode and select a model with /models.')
 
+def up_comfyui(name):
+    cfg = config()
+    comfy_backend.check_host(name, cfg)
+    print(f'[PAIN] Selected {name}: {comfy_backend.url(cfg)}', flush=True)
+    compose('config', '-q', selected=name)
+    compose('pull', 'engine', selected=name)
+    # A separate short-lived probe uses the selected image and GPU reservation.
+    # Do not replace the LLM if CUDA/ROCm cannot actually execute a GPU operation.
+    probe = 'pain-comfyui-probe-' + uuid.uuid4().hex
+    try:
+        compose('run', '--name', probe, '--rm', '--no-deps', '-T', '--entrypoint', 'python',
+                'engine', '-c', comfy_backend.probe_code(name), selected=name, timeout=120)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise ValueError('ComfyUI GPU preflight failed; the current engine was not replaced. '
+                         'Check the image, host driver and (NVIDIA) Container Toolkit. See docs/comfyui.md.') from exc
+    finally:
+        remove_probe(probe)
+    compose('up', '-d', '--remove-orphans', 'engine', selected=name)
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(name + '\n')
+    RUNTIME_STATE.write_text(runtime() + '\n')
+    details = container()
+    CONTAINER_STATE.write_text(json.dumps(details))
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        try:
+            stats = comfy_backend.api(cfg)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            time.sleep(1)
+            continue
+        comfy_backend.validate_stats(stats)
+        print(f'PAIN ready: {name}. Open {comfy_backend.url(cfg)}')
+        print('Models, workflows and images persist in ' + comfy_backend.environment(cfg)['PAIN_COMFYUI_DATA_DIR'])
+        return
+    raise ValueError('ComfyUI not ready after 180 seconds. Inspect ./ai logs; ./ai down stops it.')
 
+
+def remove_probe(name):
+    # Killing the Docker CLI on timeout does not stop its container. Clean up only
+    # the unique one-off container created by this invocation, even on Ctrl-C.
+    try:
+        subprocess.run([runtime(), 'rm', '-f', name], env=config(), check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        print(f'PAIN: could not clean up GPU probe {name}; inspect Docker.', file=sys.stderr)
+
+
+def require_llm(command):
+    if backend() in comfy_backend.BACKENDS:
+        raise ValueError(f'{command} is an LLM command. ComfyUI is active at {comfy_backend.url(config())}. '
+                         'Switch to an LLM backend first.')
 
 def presets():
     return {f'{p.parent.name}-{p.stem}': p
@@ -524,6 +588,7 @@ def sync_opencode():
 
 
 def apply(name):
+    require_llm('apply')
     available = presets()
     if name not in available:
         raise ValueError(f'Unknown preset {name}. Use ./ai presets.')
@@ -873,6 +938,7 @@ def host_value(path):
 
 
 def benchmark(args):
+    require_llm('bench')
     details = container()
     model = api('show', {'model': args.model})
     prompt = args.prompt.read_text()
@@ -1063,7 +1129,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('up', help='Start or switch backend')
-    p.add_argument('backend', choices=BACKENDS)
+    p.add_argument('backend', choices=(*LLM_BACKENDS, *comfy_backend.choices()))
+    if comfy_backend.choices():
+        p.add_argument('--device', choices=('rocm', 'cuda'), help='Choose the GPU vendor for ComfyUI')
     for name in ('down', 'status', 'presets', 'top', 'sync'):
         sub.add_parser(name)
     p = sub.add_parser('logs', help='Show engine logs')
@@ -1078,7 +1146,9 @@ def main():
     p = sub.add_parser('add-model', help='Download a GGUF and register a small-context local preset')
     p.add_argument('url')
     p = sub.add_parser('config', help='Render a backend Compose configuration')
-    p.add_argument('backend', choices=BACKENDS)
+    p.add_argument('backend', choices=(*LLM_BACKENDS, *comfy_backend.choices()))
+    if comfy_backend.choices():
+        p.add_argument('--device', choices=('rocm', 'cuda'), help='Choose the GPU vendor for ComfyUI')
     p = sub.add_parser('pull', help='Download a GGUF into PAIN_MODELS_DIR')
     p.add_argument('source',
                    help='HTTP(S) URL, hf.co/<owner>/<repo>/<file>.gguf, '
@@ -1129,9 +1199,9 @@ def main():
 
 def execute(args):
     if args.command == 'up':
-        up(args.backend)
+        up(args.backend, getattr(args, 'device', None))
     elif args.command == 'config':
-        compose('config', selected=args.backend)
+        compose('config', selected=comfy_backend.resolve(args.backend, getattr(args, 'device', None)))
     elif args.command == 'down':
         compose('down')
         RUNTIME_STATE.unlink(missing_ok=True)
@@ -1140,15 +1210,20 @@ def execute(args):
         compose('logs', *([] if args.once else ['-f']), '--tail', '100', 'engine')
     elif args.command == 'status':
         compose('ps')
-        if backend().startswith('llamacpp'):
+        if backend() in comfy_backend.BACKENDS:
+            print(comfy_backend.url(config()))
+            print(json.dumps(comfy_backend.api(config()), indent=2))
+        elif backend().startswith('llamacpp'):
             port = config().get('PAIN_PORT', '11434')
             with urllib.request.urlopen(f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/models", timeout=10) as response:
                 print(json.dumps(json.load(response), indent=2))
         else:
             print(json.dumps(api('ps'), indent=2))
     elif args.command == 'top':
+        require_llm('top')
         subprocess.run([sys.executable, str(ROOT / 'paintop')])
     elif args.command == 'sync':
+        require_llm('sync')
         sync_opencode()
     elif args.command == 'presets':
         for name, path in presets().items():
@@ -1184,6 +1259,7 @@ def execute(args):
     elif args.command == 'pull':
         pull(args.source, name=args.name, sha256=args.sha256, force=args.force)
     elif args.command == 'run':
+        require_llm(args.command)
         container()
         compose('exec', 'engine', 'ollama', 'run', args.model,
                 '--keepalive', args.keepalive)
