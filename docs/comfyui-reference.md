@@ -134,7 +134,9 @@ choices.
 The read-only `integrations/comfyui/painless_downloads` custom node implements
 ComfyUI frontend 1.58.5's `downloadModel(url, name, directory)` host hook. It does
 not alter the frontend bundle. `/painless/downloads` queues an explicit request;
-status is polled by ID. Category and filename validation confines writes to the
+status is polled through the download list. Cancellation awaits the running task
+before reporting it stopped; unfinished files are recovered as paused after a
+container restart. Explicit deletion removes only `.part` files and their URL markers. Category and filename validation confines writes to the
 model mount, supported provider URLs use HTTPS, and cross-origin requests are
 rejected. Models stream to `.part` files and are published only on completion.
 No provider cookies or tokens are copied from the browser.

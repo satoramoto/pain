@@ -13,6 +13,7 @@ sys.modules['folder_paths']=types.SimpleNamespace(models_dir='/unused')
 class Routes:
     def post(self,*args): return lambda fn:fn
     def get(self,*args): return lambda fn:fn
+    def delete(self,*args): return lambda fn:fn
 sys.modules['server']=types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=types.SimpleNamespace(routes=Routes())))
 spec=importlib.util.spec_from_file_location('painless_downloads',Path(__file__).resolve().parents[1]/'integrations/comfyui/painless_downloads/__init__.py')
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
@@ -20,6 +21,7 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 class DownloadTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        module.JOBS.clear();module.TASKS.clear()
         self.root=Path(self.tmp.name)
         self.patch=patch.object(module.folder_paths,'models_dir',str(self.root));self.patch.start();self.addCleanup(self.patch.stop)
 
@@ -56,6 +58,54 @@ class DownloadTest(unittest.IsolatedAsyncioTestCase):
             await module.transfer(job,target)
             self.assertEqual(target.read_bytes(),b'existing');self.assertEqual(ranges,[100])
         finally:await runner.cleanup()
+
+    async def test_cancel_closes_transfer_keeps_partial_and_recovers_after_restart(self):
+        from aiohttp import web
+        sent=asyncio.Event()
+        release=asyncio.Event()
+        async def handler(request):
+            response=web.StreamResponse();await response.prepare(request)
+            await response.write(b'partial');sent.set()
+            await release.wait()
+            return response
+        app=web.Application();app.router.add_get('/model',handler)
+        runner=web.AppRunner(app);await runner.setup();site=web.TCPSite(runner,'127.0.0.1',0);await site.start()
+        target=module.destination('cancel.safetensors','vae')
+        url=f'http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/model'
+        job=dict(id='cancel',name=target.name,directory='vae',url=url,status='queued',received=0,total=0)
+        module.JOBS['cancel']=job
+        task=asyncio.create_task(module.run(job,target));module.TASKS['cancel']=task
+        try:
+            await asyncio.wait_for(sent.wait(),2)
+            for _ in range(100):
+                if job['received']:break
+                await asyncio.sleep(.01)
+            await module.pause_job('cancel')
+            self.assertTrue(task.cancelled());self.assertEqual(job['status'],'paused')
+            self.assertFalse(target.exists())
+            self.assertEqual(target.with_name(target.name+'.part').read_bytes(),b'partial')
+            target.with_name(target.name+'.part.url').write_text('https://huggingface.co/example/model/resolve/main/cancel.safetensors')
+            module.JOBS.clear();module.recover_partials()
+            recovered=next(iter(module.JOBS.values()))
+            self.assertEqual(recovered['status'],'paused');self.assertEqual(recovered['received'],7)
+        finally:
+            release.set();await runner.cleanup()
+
+    async def test_cancel_queued_job_and_remove_only_partial_files(self):
+        job=dict(id='queued',name='queued.safetensors',directory='vae',url='https://huggingface.co/a',status='queued',received=0,total=0)
+        module.JOBS['queued']=job
+        task=asyncio.create_task(asyncio.sleep(100));module.TASKS['queued']=task
+        await module.pause_job('queued')
+        self.assertTrue(task.cancelled());self.assertEqual(job['status'],'paused')
+        target=module.destination(job['name'],job['directory']);target.parent.mkdir()
+        target.write_bytes(b'completed-model')
+        target.with_name(target.name+'.part').write_bytes(b'partial')
+        target.with_name(target.name+'.part.url').write_text(job['url'])
+        request=types.SimpleNamespace(headers={},host='localhost',match_info={'key':'queued'})
+        await module.remove_partial(request)
+        self.assertEqual(target.read_bytes(),b'completed-model')
+        self.assertFalse(target.with_name(target.name+'.part').exists())
+        self.assertNotIn('queued',module.JOBS)
 
     async def test_failure_keeps_final_path_absent(self):
         target=module.destination('missing.safetensors','vae')
