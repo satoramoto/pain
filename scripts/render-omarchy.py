@@ -31,13 +31,16 @@ def main():
     for name, status in fixtures.items():
         if os.environ.get('PAIN_PREVIEW_STATE') and name != os.environ['PAIN_PREVIEW_STATE']:
             continue
-        output = ROOT / f'desktop/public/omarchy/{name}.png'
+        output = ROOT / os.environ.get('PAIN_PREVIEW_OUTPUT_DIR', 'desktop/public/omarchy') / f'{name}.png'
+        output.parent.mkdir(parents=True, exist_ok=True)
         qml = '''import QtQuick
 import QtQuick.Window
+import qs.Commons as Commons
 import "App.mjs" as View
 import "AppState.mjs" as State
 import ".generated" as Zen
 Window {
+    Component.onCompleted: if (RADIUS !== null) Commons.Style.cornerRadius=RADIUS
     width:460; height:720; visible:true; color:"#171b1a"
     property var status: STATUS
     Zen.ApplicationTheme { id:theme; name:THEME }
@@ -46,7 +49,7 @@ Window {
     }
     Timer { interval:1200; running:true; onTriggered:capture.grabToImage(function(result) { if(!result.saveToFile(OUTPUT)) Qt.exit(2); else Qt.quit() }) }
 }
-'''.replace('STATUS', json.dumps(status)).replace('OUTPUT', json.dumps(str(output))).replace('THEME', json.dumps(os.environ.get('PAIN_PREVIEW_THEME', 'omarchy')))
+'''.replace('STATUS', json.dumps(status)).replace('OUTPUT', json.dumps(str(output))).replace('THEME', json.dumps(os.environ.get('PAIN_PREVIEW_THEME', 'omarchy'))).replace('RADIUS', json.dumps(int(os.environ['PAIN_PREVIEW_RADIUS']) if 'PAIN_PREVIEW_RADIUS' in os.environ else None))
         (work / 'shell.qml').write_text(qml)
         runtime = work / 'runtime'
         runtime.mkdir(mode=0o700, exist_ok=True)

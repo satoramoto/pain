@@ -1,8 +1,15 @@
-# PAIN — Private AI Network
+# pain(less)
 
-A personal library of local AI runtimes, model presets, and repeatable experiments.
+**Making agentic coding with local AI as painless as possible**
+
+Manage local inference engines and models from one small desktop panel, then
+connect your coding agents to them. The project also includes runtime presets
+and repeatable experiments.
 Built initially for a 64 GB ASUS ROG Flow Z13 with a Ryzen AI Max+ 395 / Radeon
 8060S on Linux. Currently serves one localhost-only inference engine at a time.
+
+The display name is **pain(less)**. The repository, commands, `PAIN_*` environment
+variables, application ID, and existing data directories keep their names for compatibility.
 
 ## Quick start
 
@@ -20,7 +27,7 @@ opencode
 Every `ai up` waits for the engine, then prepares the checked-in presets (applied
 on Ollama backends, compiled into `models.ini` for llama.cpp). OpenCode V2
 discovers them through the localhost inference API; select one with
-`/models`. OpenCode runs on the host as your normal user, even if you start PAIN
+`/models`. OpenCode runs on the host as your normal user, even if you start pain(less)
 with sudo. You can also use `./ai run qwen38-q8-tuned` for Ollama's own chat.
 New Modelfiles are picked up automatically on the next `ai up`.
 
@@ -32,7 +39,7 @@ when running with sudo, since sudo may strip shell environment variables.
 
 All weights live under `PAIN_MODELS_DIR` (default `~/Models`), mounted at
 `/models` in the container. The Ollama backends keep their blob store in
-`$PAIN_MODELS_DIR/ollama`, so PAIN uses no custom Docker volumes. Presets
+`$PAIN_MODELS_DIR/ollama`, so pain(less) uses no custom Docker volumes. Presets
 reference GGUFs directly by path.
 
 If an older Ollama container owns port 11434, stop it before the first start:
@@ -42,7 +49,7 @@ sudo docker stop ollama
 sudo ./ai up rocm
 ```
 
-PAIN does not stop containers it doesn't own. Nothing is downloaded or started
+pain(less) does not stop containers it doesn't own. Nothing is downloaded or started
 just by cloning this repo. For a fresh installation, download the model's GGUF
 into `PAIN_MODELS_DIR` (for example `Qwen3.8-27B-Q8_0.gguf` from the model card
 below), then start a backend.
@@ -68,7 +75,7 @@ and hardlinked to `PAIN_MODELS_DIR/<tag>.gguf`; nothing is duplicated.
 Set `PAIN_RUNTIME=docker` (default) or `PAIN_RUNTIME=podman` in `.env`.
 All inference, model-import/download containers and lab commands use that runtime.
 Podman needs a Compose provider (`podman-compose` or another configured provider).
-Stop PAIN with the old runtime before switching; recorded runtime ownership
+Stop pain(less) with the old runtime before switching; recorded runtime ownership
 prevents accidentally managing a different engine. Rootless Podman failures do
 not trigger sudo/pkexec into a different container store.
 
@@ -88,7 +95,7 @@ for Storybook stories for the web tray and native Omarchy panel captures.
 ./ai up vulkan                       # Replace the same service with Vulkan
 ./ai status                          # Container and loaded-model status
 ./ai logs                            # Follow server logs; Ctrl-C exits
-./ai down                            # Stop/remove PAIN container; keep models
+./ai down                            # Stop/remove pain(less) container; keep models
 ./ai config rocm                     # Inspect resolved Compose configuration
 ./ai pull qwen3.8:27b-q8_0            # Download/export a model into PAIN_MODELS_DIR
 ./ai apply qwen38-q8-tuned            # Create/update the tuned model preset
@@ -270,7 +277,7 @@ and press Start (or Restart). Stop, Monitor, and Logs sit alongside it, and the
 panel is keyboard-driven: h/l walk chips, j/k switch rows, Enter activates,
 S/D/M/G/R start/stop/monitor/logs/refresh. Left-click the bar glyph for the
 panel, right-click for `paintop`, middle-click to refresh.
-Starting or switching replaces the running PAIN container and interrupts requests.
+Starting or switching replaces the running pain(less) container and interrupts requests.
 
 Start, Restart, and Stop run in the background: the hero shows the adapter's
 progress, the action buttons stay disabled until it exits, and a desktop

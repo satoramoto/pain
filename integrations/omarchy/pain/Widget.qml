@@ -56,7 +56,7 @@ Panel {
   function controlOutput(data) { var line=String(data).trim(); if(line.length) controlLine=line }
   function ingest(text) {
     var next
-    try { next=JSON.parse(text) } catch(e) { next={online:false,error:"Unable to read PAIN status"} }
+    try { next=JSON.parse(text) } catch(e) { next={online:false,error:"Unable to read pain(less) status"} }
     var inf=next.inference || {}, now=Date.now(), decoded=Model.num(inf.decoded)
     if(inf.processing && prevSampleMs>0 && decoded>prevDecoded && now>prevSampleMs) liveSpeed=(decoded-prevDecoded)/((now-prevSampleMs)/1000)
     else if(!inf.processing) liveSpeed=0
@@ -132,8 +132,8 @@ Panel {
     active: root.generating || root.busy
     dimmed: !root.online && !root.busy
     tooltipText: root.online
-      ? ("PAIN · " + (root.status.model_alias || "no model") + (root.generating ? " · " + Model.speedText(root.liveSpeed) : ""))
-      : "PAIN · offline"
+      ? ("pain(less) · " + (root.status.model_alias || "no model") + (root.generating ? " · " + Model.speedText(root.liveSpeed) : ""))
+      : "pain(less) · offline"
     onPressed: function(b) {
       if (b === Qt.MiddleButton) root.refresh()
       else if (b === Qt.RightButton) root.launch("top")

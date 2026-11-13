@@ -79,7 +79,7 @@ def snapshot():
 
 def notify(summary, body, urgent=False):
     """Desktop notification for background runs; silently skipped without notify-send."""
-    args = ['notify-send', '-a', 'PAIN', '-u', 'critical' if urgent else 'normal', summary, body]
+    args = ['notify-send', '-a', 'pain(less)', '-u', 'critical' if urgent else 'normal', summary, body]
     try:
         subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
     except (OSError, subprocess.SubprocessError):
@@ -108,7 +108,7 @@ def action(command, backend=None, escalate='sudo'):
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise ValueError('A PAIN desktop operation is already in progress.')
+                raise ValueError('A pain(less) desktop operation is already in progress.')
         args = [str(ROOT / 'ai'), 'add-model' if command == 'download' else 'down' if command == 'folder' else command]
         if command == 'logs':
             args.append('--once')
@@ -125,7 +125,7 @@ def action(command, backend=None, escalate='sudo'):
             probe = subprocess.run([runtime, 'info'], stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, timeout=10)
             if probe.returncode and runtime == 'podman':
-                raise ValueError('Podman is unavailable. Start its machine/service; PAIN will not switch to rootful Podman.')
+                raise ValueError('Podman is unavailable. Start its machine/service; pain(less) will not switch to rootful Podman.')
             if probe.returncode:
                 prefix = [escalate]
         result = subprocess.run(prefix + args, cwd=ROOT).returncode
@@ -164,7 +164,7 @@ def main():
         result = action(args.command, args.backend, escalate='sudo' if interactive else 'pkexec')
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         error = str(exc)
-        print(f'PAIN: {exc}', file=sys.stderr)
+        print(f'pain(less): {exc}', file=sys.stderr)
         result = 1
     if interactive:
         if args.command in ('up', 'down', 'pull', 'use', 'remove') or result:
@@ -174,7 +174,7 @@ def main():
                 pass
     elif args.command in ('up', 'down', 'pull', 'use', 'remove', 'download', 'folder'):
         target = args.backend or 'engine'
-        title = 'PAIN models' if args.command in ('pull', 'use', 'remove') else 'PAIN engine'
+        title = 'pain(less) models' if args.command in ('pull', 'use', 'remove') else 'pain(less) engine'
         if result:
             notify(title, f'Could not {args.command} {target}: {error or f"exit {result}"}', urgent=True)
         else:

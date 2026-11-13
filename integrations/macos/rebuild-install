@@ -2,9 +2,9 @@
 # Rebuild the current checkout and replace the local QA app, keeping inference running.
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-destination=${1:-/Applications/PAIN.app}
-if [ "$#" -gt 1 ] || [[ "$destination" != /*/PAIN.app ]]; then
-  echo 'Usage: integrations/macos/rebuild-install [/absolute/path/PAIN.app]' >&2
+destination=${1:-"/Applications/pain(less).app"}
+if [ "$#" -gt 1 ] || [[ "$destination" != /*/"pain(less).app" ]]; then
+  echo 'Usage: integrations/macos/rebuild-install [/absolute/path/pain(less).app]' >&2
   exit 1
 fi
 [ "$(uname -s):$(uname -m)" = Darwin:arm64 ] || { echo 'Requires an Apple Silicon Mac.' >&2; exit 1; }
@@ -33,7 +33,7 @@ if [[ "$target" != /* ]]; then target="$root/desktop/src-tauri/$target"; fi
 export CARGO_TARGET_DIR="$target"
 # An app bundle is enough for local QA; skip the distribution DMG.
 npm --prefix "$root/desktop" run tauri build -- --target aarch64-apple-darwin --bundles app --no-sign
-app="$target/aarch64-apple-darwin/release/bundle/macos/PAIN.app"
+app="$target/aarch64-apple-darwin/release/bundle/macos/pain(less).app"
 [ -x "$app/Contents/MacOS/pain-desktop" ] || { echo "Missing built app: $app" >&2; exit 1; }
 # Local QA needs a complete ad-hoc bundle signature, not just rustc's linker signature.
 codesign --force --sign - "$app"
@@ -46,7 +46,7 @@ replaced=false
 cleanup() {
   local result=$?
   if [ "$installed" = false ] && [ "$replaced" = true ]; then
-    mv "$destination" "$stage/PAIN.app" || {
+    mv "$destination" "$stage/pain(less).app" || {
       echo "The previous app is preserved at $stage/previous.app" >&2
       return 1
     }
@@ -68,18 +68,18 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-ditto "$app" "$stage/PAIN.app"
-codesign --verify --deep --strict "$stage/PAIN.app"
-# Quitting PAIN's window/tray does not stop its VM or inference containers.
+ditto "$app" "$stage/pain(less).app"
+codesign --verify --deep --strict "$stage/pain(less).app"
+# Quitting pain(less)'s window/tray does not stop its VM or inference containers.
 if pgrep -x pain-desktop >/dev/null; then
   osascript -e 'tell application id "ai.pain.desktop" to quit'
 fi
 if pgrep -x pain-desktop >/dev/null; then
-  echo 'Quit PAIN before replacing the app, then rerun this command.' >&2
+  echo 'Quit pain(less) before replacing the app, then rerun this command.' >&2
   exit 1
 fi
 if [ -e "$destination" ]; then mv "$destination" "$stage/previous.app"; fi
-mv "$stage/PAIN.app" "$destination"
+mv "$stage/pain(less).app" "$destination"
 replaced=true
 codesign --verify --deep --strict "$destination"
 installed=true

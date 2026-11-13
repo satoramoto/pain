@@ -130,12 +130,12 @@ fn opencode_config(models: &Value, legacy: bool) -> Result<Value, String> {
     if legacy {
         Ok(
             json!({"$schema":"https://opencode.ai/config.json","model":format!("pain/{first}"),
-          "provider":{"pain":{"name":"PAIN local","npm":"@ai-sdk/openai-compatible","options":{"baseURL":"http://127.0.0.1:11434/v1"},"models":available}}}),
+          "provider":{"pain":{"name":"pain(less) local","npm":"@ai-sdk/openai-compatible","options":{"baseURL":"http://127.0.0.1:11434/v1"},"models":available}}}),
         )
     } else {
         Ok(
             json!({"$schema":"https://opencode.ai/config.json","model":format!("pain/{first}"),
-          "providers":{"pain":{"name":"PAIN local","package":"@opencode/ai/providers/openai-compatible","settings":{"baseURL":"http://127.0.0.1:11434/v1"},"models":available}}}),
+          "providers":{"pain":{"name":"pain(less) local","package":"@opencode/ai/providers/openai-compatible","settings":{"baseURL":"http://127.0.0.1:11434/v1"},"models":available}}}),
         )
     }
 }
@@ -149,7 +149,7 @@ async fn onboarding_step(
         if !["podman", "docker"].contains(&selected.as_str()) { return Err("Unknown container framework.".into()); }
         if !["dependencies", "machine", "model", "engine", "opencode", "launch"].contains(&step.as_str()) { return Err("Unknown setup step.".into()); }
         let state = app.state::<Operations>();
-        let _guard = state.0.try_lock().map_err(|_| "Another PAIN operation is in progress.")?;
+        let _guard = state.0.try_lock().map_err(|_| "Another pain(less) operation is in progress.")?;
         let data = data(&app)?;
         let root = data.join("project");
         fs::create_dir_all(&data).map_err(|e| e.to_string())?;
@@ -171,7 +171,7 @@ async fn onboarding_step(
         Ok(result)
     }).await.map_err(|e|e.to_string())?
 }
-/// Point PAIN's private OpenCode config at whatever the engine serves now.
+/// Point pain(less)'s private OpenCode config at whatever the engine serves now.
 /// `version_output` is what the onboarding `opencode` step printed.
 fn write_opencode_config(data: &Path, version_output: &str) -> Result<(), String> {
     let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e|e.to_string())?;
@@ -215,7 +215,7 @@ async fn control(app: tauri::AppHandle, command: String, value: String) -> Resul
         let _guard = state
             .0
             .try_lock()
-            .map_err(|_| "Another PAIN operation is in progress.")?;
+            .map_err(|_| "Another pain(less) operation is in progress.")?;
         match command.as_str() {
             "setup" => {
                 prepare(&app, &data, &root)?;
@@ -415,7 +415,7 @@ fn main() {
             TrayIconBuilder::with_id("brain")
                 .icon(tauri::include_image!("./icons/tray-brain.png"))
                 .icon_as_template(true)
-                .tooltip("Private AI Network")
+                .tooltip("pain(less)")
                 .menu(&Menu::with_items(app, &[
                     &MenuItem::with_id(app, "getting-started", "Getting Started", true, None::<&str>)?,
                     &MenuItem::with_id(app, "check-updates", "Check for Updates…", true, None::<&str>)?,
@@ -427,7 +427,7 @@ fn main() {
                             if window.is_visible().unwrap_or(false) {
                                 let _ = window.hide();
                             } else if let Err(error) = show_popup(&window, rect) {
-                                eprintln!("Cannot show PAIN popup: {error}");
+                                eprintln!("Cannot show pain(less) popup: {error}");
                             }
                         }
                     }
@@ -468,5 +468,5 @@ fn main() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("PAIN failed to launch");
+        .expect("pain(less) failed to launch");
 }

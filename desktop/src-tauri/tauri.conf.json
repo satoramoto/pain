@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PAIN",
+  "productName": "pain(less)",
   "version": "0.1.0",
   "identifier": "ai.pain.desktop",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "PAIN",
+        "title": "pain(less)",
         "width": 460,
         "height": 850,
         "visible": false,

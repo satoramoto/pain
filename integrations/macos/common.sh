@@ -1,4 +1,4 @@
-# Sourced by PAIN's Mac entry points. No global container configuration is changed.
+# Sourced by pain(less)'s Mac entry points. No global container configuration is changed.
 pain_data=${PAIN_DATA_DIR:-"$HOME/Library/Application Support/PAIN"}
 pain_runtime="$pain_data/runtime/current"
 export PATH="/opt/podman/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -6,7 +6,7 @@ export CONTAINERS_MACHINE_PROVIDER=libkrun
 pain_require_runtime() {
   [ "$(uname -s):$(uname -m)" = Darwin:arm64 ] || { echo 'Requires an Apple Silicon Mac.' >&2; return 1; }
   command -v podman >/dev/null || { echo 'Install the official Podman macOS package first.' >&2; return 1; }
-  [ -x "$pain_runtime/bin/krunkit" ] || { echo 'Install the PAIN runtime artifact with integrations/macos/install-runtime first.' >&2; return 1; }
+  [ -x "$pain_runtime/bin/krunkit" ] || { echo 'Install the pain(less) runtime artifact with integrations/macos/install-runtime first.' >&2; return 1; }
   cmp -s "$pain_runtime/llama-revision" "$root/containers/virtgpu/llama-revision" || {
     echo 'Runtime and checkout versions differ; install the runtime artifact from this branch build.' >&2; return 1;
   }

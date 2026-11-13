@@ -1,5 +1,5 @@
 #!/bin/sh
-# No host Python: run PAIN's controller beside the engine in the Podman VM.
+# No host Python: run pain(less)'s controller beside the engine in the Podman VM.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 . "$root/integrations/macos/common.sh"
@@ -28,7 +28,7 @@ if [ -n "${PAIN_PODMAN_CONNECTION:-}" ]; then
   target="--connection=$PAIN_PODMAN_CONNECTION"
 else
   api=$(podman machine inspect pain-metal --format '{{.ConnectionInfo.PodmanSocket.Path}}')
-  [ -S "$api" ] || { echo 'The PAIN VM is not running. Prepare the VM, then try again.' >&2; exit 1; }
+  [ -S "$api" ] || { echo 'The pain(less) VM is not running. Prepare the VM, then try again.' >&2; exit 1; }
   target="--url=unix://$api"
 fi
 models=${PAIN_MODELS_DIR:-$HOME/Models}
