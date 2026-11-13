@@ -22,9 +22,12 @@ import urllib.parse
 import urllib.request
 import uuid
 
+ROOT = Path(__file__).resolve().parent
+# Desktop adapters load this script with runpy, which does not add its directory
+# to sys.path. Resolve sibling modules from the checkout, regardless of cwd.
+sys.path.insert(0, str(ROOT))
 import comfy_backend
 
-ROOT = Path(__file__).resolve().parent
 STATE = ROOT / '.state' / 'backend'
 CONTAINER_STATE = ROOT / '.state' / 'container.json'
 RUNTIME_STATE = ROOT / '.state' / 'runtime'
