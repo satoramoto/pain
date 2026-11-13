@@ -23,9 +23,10 @@ Models go into subfolders such as `diffusion_models`, `text_encoders`, `vae`, an
 `loras`. ComfyUI itself is installed at `/opt/ComfyUI` inside the container;
 put models in the folders above, not alongside its program files.
 
-Downloads are queued one at a time. If one fails, click **Download** again to
-retry; partial files resume when the provider supports it. Existing model files
-are never overwritten. Stopping or switching engines keeps your files.
+Open **Downloads** in ComfyUI’s lower-left corner to manage transfers, even
+after reloading the page. **Cancel** stops a transfer and keeps its partial file.
+**Resume** continues it; **Remove partial** asks before deleting that unfinished
+file. Downloads run one at a time. Existing complete models are never overwritten.
 
 The downloader supports public Hugging Face and Civitai model links. If a model
 requires an account or license acceptance, download it from the provider and

@@ -1,6 +1,7 @@
 """Explicit, local model downloads for pain(less)'s pinned ComfyUI frontend."""
 import asyncio
 import hashlib
+from contextlib import suppress
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -17,7 +18,8 @@ CATEGORIES = {'checkpoints', 'text_encoders', 'clip', 'clip_vision', 'diffusion_
               'vae_approx', 'hypernetworks', 'gligen', 'style_models'}
 SUFFIXES = {'.safetensors', '.sft', '.ckpt', '.pt', '.pth', '.gguf'}
 JOBS = {}
-TASKS = set()
+TASKS = {}
+ACTIVE = ('queued', 'downloading', 'cancelling')
 LOCK = asyncio.Semaphore(1)
 
 
@@ -106,6 +108,9 @@ async def run(job, target):
     try:
         async with LOCK:
             await transfer(job, target)
+    except asyncio.CancelledError:
+        job.update(status='paused', error='')
+        raise
     except Exception as exc:
         job.update(status='error', error=str(exc))
 
@@ -127,16 +132,19 @@ async def start(request):
         raise web.HTTPBadRequest(text=str(exc)) from exc
     key = hashlib.sha256(str(target).encode()).hexdigest()[:24]
     existing = JOBS.get(key)
-    if existing and existing['status'] in ('queued', 'downloading'):
+    if existing and existing['status'] in ACTIVE:
         return web.json_response(existing)
-    if sum(job['status'] in ('queued', 'downloading') for job in JOBS.values()) >= 32:
+    if sum(job['status'] in ACTIVE for job in JOBS.values()) >= 32:
         raise web.HTTPTooManyRequests(text='The download queue is full.')
     job = dict(id=key, name=body['name'], directory=body['directory'], url=url,
                status='queued', received=0, total=0, error='')
     JOBS[key] = job
     task = asyncio.create_task(run(job, target))
-    TASKS.add(task)
-    task.add_done_callback(TASKS.discard)
+    TASKS[key] = task
+    def finished(done):
+        if TASKS.get(key) is done:
+            TASKS.pop(key, None)
+    task.add_done_callback(finished)
     return web.json_response(job)
 
 
@@ -146,3 +154,62 @@ async def status(request):
     if job is None:
         raise web.HTTPNotFound(text='Download not found. Click Download to resume it.')
     return web.json_response(job)
+
+
+def recover_partials():
+    """Recover resumable transfers after a server restart without starting them."""
+    root = Path(folder_paths.models_dir)
+    for marker in root.glob('*/*.part.url'):
+        try:
+            name = marker.name.removesuffix('.part.url')
+            target = destination(name, marker.parent.name)
+            part = target.with_name(target.name + '.part')
+            if marker.is_symlink() or part.is_symlink() or not part.is_file() or target.exists():
+                continue
+            key = hashlib.sha256(str(target).encode()).hexdigest()[:24]
+            if key not in JOBS:
+                JOBS[key] = dict(id=key, name=name, directory=marker.parent.name,
+                                 url=validate_url(marker.read_text()), status='paused',
+                                 received=part.stat().st_size, total=0, error='')
+        except (OSError, ValueError):
+            continue
+
+
+@PromptServer.instance.routes.get('/painless/downloads')
+async def listing(request):
+    recover_partials()
+    return web.json_response(list(JOBS.values()))
+
+
+async def pause_job(key):
+    job = JOBS.get(key)
+    if job is None:
+        raise web.HTTPNotFound(text='Download not found.')
+    task = TASKS.get(key)
+    if task and not task.done():
+        job['status'] = 'cancelling'
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        job.update(status='paused', error='')
+    return job
+
+
+@PromptServer.instance.routes.post('/painless/downloads/{key}/cancel')
+async def cancel(request):
+    local_request(request)
+    return web.json_response(await pause_job(request.match_info['key']))
+
+
+@PromptServer.instance.routes.delete('/painless/downloads/{key}')
+async def remove_partial(request):
+    local_request(request)
+    job = await pause_job(request.match_info['key'])
+    target = destination(job['name'], job['directory'])
+    for suffix in ('.part', '.part.url'):
+        path = target.with_name(target.name + suffix)
+        if path.is_symlink():
+            raise web.HTTPBadRequest(text='Refusing to remove a linked staging file.')
+        path.unlink(missing_ok=True)
+    JOBS.pop(job['id'], None)
+    return web.json_response({'removed': True})
