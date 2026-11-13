@@ -1,0 +1,54 @@
+#!/bin/sh
+# CI/developer build: dependencies exist only on the build machine.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+[ "$(uname -s):$(uname -m)" = Darwin:arm64 ] || { echo 'Requires an ARM64 Mac builder.' >&2; exit 1; }
+for tool in git cmake meson ninja pkg-config python3 krunkit; do
+  command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 1; }
+done
+python3 -c 'import yaml' 2>/dev/null || { echo 'Missing build dependency: PyYAML for the python3 on PATH.' >&2; exit 1; }
+"$root/integrations/macos/build-metal-libraries"
+revision=$(cat "$root/integrations/macos/virgl-revision")
+work="$root/.build/virgl-$revision"
+if [ ! -d "$work/src" ]; then
+  mkdir -p "$work"
+  git init "$work/src"
+  git -C "$work/src" remote add origin https://gitlab.freedesktop.org/kpouget/virglrenderer.git
+fi
+# A failed fetch must be retryable even when the source directory already exists.
+if [ "$(git -C "$work/src" rev-parse HEAD 2>/dev/null || true)" != "$revision" ]; then
+  attempt=0
+  until git -C "$work/src" fetch --depth 1 origin "$revision"; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 4 ] || { echo 'Virgl source fetch failed after four attempts.' >&2; exit 1; }
+    sleep "$((attempt * 5))"
+  done
+  git -C "$work/src" checkout --detach FETCH_HEAD
+fi
+[ "$(git -C "$work/src" rev-parse HEAD)" = "$revision" ] || { echo 'Virgl source mismatch.' >&2; exit 1; }
+export LIBRARY_PATH="/opt/homebrew/lib:/opt/homebrew/opt/molten-vk/lib:/opt/homebrew/opt/molten-vk/libexec/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+meson setup "$work/build" "$work/src" -Dvenus=true -Dapir=true -Dplatforms=[] -Dtests=false --buildtype release
+meson compile -C "$work/build"
+metal="$root/.build/metal-$(cat "$root/containers/virtgpu/llama-revision")/build/bin"
+# A new output directory is required so stale libraries can never enter a bundle.
+python3 "$root/scripts/bundle-macos-runtime.py" --metal "$metal" \
+  --virgl "$work/build/src/libvirglrenderer.1.dylib" \
+  --krunkit "$(command -v krunkit)" --output "$root/.build/macos-runtime"
+mkdir -p "$root/.build/macos-runtime/licenses"
+cp "$work/src/COPYING" "$root/.build/macos-runtime/licenses/virglrenderer.txt"
+cp "$root/.build/metal-$(cat "$root/containers/virtgpu/llama-revision")/src/LICENSE" "$root/.build/macos-runtime/licenses/llama.cpp.txt"
+# Preserve redistribution notices for the virtualization dependency closure.
+if command -v brew >/dev/null; then
+  brew list --versions > "$root/.build/macos-runtime/build-packages.txt"
+  for formula in krunkit libkrun libkrunfw libepoxy molten-vk $(brew deps --formula krunkit libepoxy molten-vk); do
+    prefix=$(brew --prefix "$formula" 2>/dev/null || true)
+    if [ -n "$prefix" ]; then
+      mkdir -p "$root/.build/macos-runtime/licenses/$formula"
+      find "$prefix" -maxdepth 2 -type f \( -iname '*license*' -o -iname '*copying*' -o -name '*.spdx.json' \) -exec cp {} "$root/.build/macos-runtime/licenses/$formula/" \;
+    fi
+  done
+fi
+"$root/.build/macos-runtime/bin/krunkit" --help >/dev/null
+python3 -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1]); ctypes.CDLL(sys.argv[2])' "$root/.build/macos-runtime/lib/libggml-metal.dylib" "$root/.build/macos-runtime/lib/libggml-virtgpu-backend.dylib"
+tar -C "$root/.build" -czf "$root/.build/pain-macos-runtime-arm64.tar.gz" macos-runtime
+(cd "$root/.build" && shasum -a 256 pain-macos-runtime-arm64.tar.gz > pain-macos-runtime-arm64.tar.gz.sha256)

@@ -1,0 +1,7 @@
+services:
+  engine:
+    image: "${PAIN_LLAMACPP_CPU_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/health"]
+    command: >
+      ${PAIN_LLAMACPP_CPU_CMD:---models-preset /models/models.ini --models-max 1 --models-autoload -ngl 0 -b 512 -ub 256 -t 16 --host 0.0.0.0 --port 11434}

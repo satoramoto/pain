@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
 """PAIN: local inference setups, presets, and reproducible timing experiments."""
 import argparse
+from contextlib import contextmanager
 import datetime as dt
+import errno
+import fcntl
 import hashlib
 import itertools
 import json
 import os
+import shutil
 from pathlib import Path
+import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -19,7 +27,9 @@ import comfy_backend
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / '.state' / 'backend'
 CONTAINER_STATE = ROOT / '.state' / 'container.json'
-LLM_BACKENDS = ('rocm', 'vulkan', 'llamacpp-vulkan')
+RUNTIME_STATE = ROOT / '.state' / 'runtime'
+SELECTED = 'models.selected'  # in PAIN_MODELS_DIR; names the preset a single-model engine serves
+LLM_BACKENDS = ('rocm', 'vulkan', 'llamacpp-vulkan', 'llamacpp-cpu', 'llamacpp-metal')
 BACKENDS = (*LLM_BACKENDS, *comfy_backend.BACKENDS)
 
 
@@ -45,18 +55,30 @@ def backend():
     return name
 
 
+def runtime():
+    name = config().get('PAIN_RUNTIME', 'docker')
+    if name not in ('docker', 'podman'):
+        raise ValueError('PAIN_RUNTIME must be docker or podman.')
+    return name
+
+
 def compose(*args, selected=None, capture=False, timeout=None):
     selected = selected or backend()
+    if args and args[0] not in ('config', 'build', 'pull') and RUNTIME_STATE.exists():
+        previous = RUNTIME_STATE.read_text().strip()
+        if previous != runtime():
+            raise ValueError(f'PAIN belongs to {previous}. Run PAIN_RUNTIME={previous} ./ai down before switching runtimes.')
     env = config()
     if selected in comfy_backend.BACKENDS:
         env = comfy_backend.environment(env)
         comfy_backend.url(env)  # Validate before Docker sees the port.
     env['PAIN_BACKEND'] = selected
+    env['PAIN_MODELS_DIR'] = str(models_dir())
     base = 'compose.comfyui.yaml' if selected in comfy_backend.BACKENDS else 'compose.yaml'
-    command = ['docker', 'compose', '--project-directory', str(ROOT),
+    command = [runtime(), 'compose', '--project-directory', str(ROOT),
                '-f', str(ROOT / base),
                '-f', str(ROOT / 'backends' / f'{selected}.yaml'), *args]
-    return subprocess.run(command, env=env, check=True, text=True,
+    return subprocess.run(command, cwd=ROOT, env=env, check=True, text=True,
                           stdout=subprocess.PIPE if capture else None,
                           stderr=subprocess.DEVNULL if capture else None, timeout=timeout)
 
@@ -64,7 +86,7 @@ def compose(*args, selected=None, capture=False, timeout=None):
 def api(path, data=None, timeout=1800):
     port = int(config().get('PAIN_PORT', '11434'))
     payload = json.dumps(data).encode() if data is not None else None
-    request = urllib.request.Request(f'http://127.0.0.1:{port}/api/{path}',
+    request = urllib.request.Request(f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/api/{path}",
                                      data=payload,
                                      headers={'Content-Type': 'application/json'})
     try:
@@ -84,18 +106,22 @@ def api(path, data=None, timeout=1800):
 
 def container():
     try:
-        cid = compose('ps', '-q', 'ollama', capture=True).stdout.strip()
+        cid = compose('ps', '-q', capture=True).stdout.strip()
         if not cid:
-            raise ValueError('PAIN is not running. Start it with ./ai up rocm (or vulkan).')
-        details = json.loads(subprocess.check_output(['docker', 'inspect', cid], text=True))[0]
+            raise ValueError('PAIN is not running. Start it with ./ai up <backend>.')
+        details = json.loads(subprocess.check_output([runtime(), 'inspect', cid], text=True))[0]
     except (OSError, subprocess.CalledProcessError) as exc:
         try:
             if backend() in comfy_backend.BACKENDS:
                 comfy_backend.validate_stats(comfy_backend.api(config()))
             else:
-                api('version', timeout=3)
-        except (urllib.error.URLError, TimeoutError):
-            raise ValueError('PAIN is not running. Start it with ./ai up rocm (or vulkan).') from exc
+                port = int(config().get('PAIN_PORT', '11434'))
+                check_url = f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/health" if backend().startswith('llamacpp') else f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/api/version"
+                req = urllib.request.Request(check_url)
+                with urllib.request.urlopen(req, timeout=3) as res:
+                    pass
+        except Exception:
+            raise ValueError('PAIN is not running. Start it with ./ai up <backend>.') from exc
         if CONTAINER_STATE.exists():
             details = json.loads(CONTAINER_STATE.read_text())
         else:
@@ -111,15 +137,29 @@ def up(name, device=None):
     name = comfy_backend.resolve(name, device)
     if name in comfy_backend.BACKENDS:
         return up_comfyui(name)
-    # Ensure hot/cold paths exist
-    get_paths()
+    # Ensure the models directory exists
+    models_dir()
     # Pull/validate before replacing the working service. One Compose project means
     # switching backends replaces the same service instead of running two engines.
-    compose('config', '-q', selected=name)
-    compose('pull', 'ollama', selected=name)
-    compose('up', '-d', '--remove-orphans', 'ollama', selected=name)
+    compose('config', selected=name, capture=True)
+    if name == 'llamacpp-metal':
+        if runtime() != 'podman':
+            raise ValueError('llamacpp-metal requires Podman with an APIR-enabled libkrun VM. See docs/macos.md.')
+        compose('build', 'engine', selected=name)
+        # APIR admits one guest process at a time, so a running engine must stop
+        # before the probe (and before its replacement) can reach the device.
+        compose('down', selected=name)
+        compose('run', '-T', '--rm', '--no-deps', 'engine', '--pain-probe', selected=name)
+    else:
+        compose('pull', 'engine', selected=name)
+    if name.startswith('llamacpp'):
+        # llama-server reads models.ini once at startup, so the presets must be
+        # current before the container is (re)created, not after it is healthy.
+        generate_models_ini()
+    compose('up', '-d', '--force-recreate', '--remove-orphans', 'engine', selected=name)
     STATE.parent.mkdir(exist_ok=True)
     STATE.write_text(name + '\n')
+    RUNTIME_STATE.write_text(runtime() + '\n')
     details = container()
     CONTAINER_STATE.write_text(json.dumps(details))
     deadline = time.monotonic() + 90
@@ -127,11 +167,11 @@ def up(name, device=None):
         port = int(config().get('PAIN_PORT', '11434'))
         while time.monotonic() < deadline:
             try:
-                req = urllib.request.Request(f'http://127.0.0.1:{port}/health')
+                req = urllib.request.Request(f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/health")
                 with urllib.request.urlopen(req, timeout=3) as res:
                     if res.status == 200:
                         break
-            except (urllib.error.URLError, TimeoutError):
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
                 time.sleep(1)
                 continue
         else:
@@ -142,13 +182,16 @@ def up(name, device=None):
         while time.monotonic() < deadline:
             try:
                 version = api('version', timeout=3)['version']
-            except (urllib.error.URLError, TimeoutError):
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
                 time.sleep(1)
                 continue
             break
         else:
             raise ValueError('API not ready after 90 seconds. Inspect ./ai logs.')
-        for preset in presets():
+        for preset, path in presets().items():
+            if not preset_ready(path):
+                print(f'Skipping preset (weights not on disk): {preset}', flush=True)
+                continue
             print(f'Applying preset: {preset}', flush=True)
             apply(preset)
         sync_opencode()
@@ -160,21 +203,22 @@ def up_comfyui(name):
     comfy_backend.check_host(name, cfg)
     print(f'[PAIN] Selected {name}: {comfy_backend.url(cfg)}', flush=True)
     compose('config', '-q', selected=name)
-    compose('pull', 'ollama', selected=name)
+    compose('pull', 'engine', selected=name)
     # A separate short-lived probe uses the selected image and GPU reservation.
     # Do not replace the LLM if CUDA/ROCm cannot actually execute a GPU operation.
     probe = 'pain-comfyui-probe-' + uuid.uuid4().hex
     try:
         compose('run', '--name', probe, '--rm', '--no-deps', '-T', '--entrypoint', 'python',
-                'ollama', '-c', comfy_backend.probe_code(name), selected=name, timeout=120)
+                'engine', '-c', comfy_backend.probe_code(name), selected=name, timeout=120)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise ValueError('ComfyUI GPU preflight failed; the current engine was not replaced. '
                          'Check the image, host driver and (NVIDIA) Container Toolkit. See docs/comfyui.md.') from exc
     finally:
         remove_probe(probe)
-    compose('up', '-d', '--remove-orphans', 'ollama', selected=name)
+    compose('up', '-d', '--remove-orphans', 'engine', selected=name)
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(name + '\n')
+    RUNTIME_STATE.write_text(runtime() + '\n')
     details = container()
     CONTAINER_STATE.write_text(json.dumps(details))
     deadline = time.monotonic() + 180
@@ -195,7 +239,7 @@ def remove_probe(name):
     # Killing the Docker CLI on timeout does not stop its container. Clean up only
     # the unique one-off container created by this invocation, even on Ctrl-C.
     try:
-        subprocess.run(['docker', 'rm', '-f', name], env=config(), check=False,
+        subprocess.run([runtime(), 'rm', '-f', name], env=config(), check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         print(f'PAIN: could not clean up GPU probe {name}; inspect Docker.', file=sys.stderr)
@@ -211,100 +255,258 @@ def presets():
             for p in sorted((ROOT / 'models').glob('*/*.Modelfile'))}
 
 
-def get_paths():
+def models_dir():
     cfg = config()
-    hot = Path(cfg.get('PAIN_HOT_DIR', Path.home() / '.local' / 'share' / 'pain' / 'models')).expanduser().resolve()
-    cold = Path(cfg.get('PAIN_COLD_DIR', Path.home() / '.local' / 'share' / 'pain' / 'vault')).expanduser().resolve()
-    hot.mkdir(parents=True, exist_ok=True)
-    cold.mkdir(parents=True, exist_ok=True)
-    return hot, cold
+    raw = cfg.get('PAIN_MODELS_DIR') or cfg.get('PAIN_HOT_DIR') or str(Path.home() / 'Models')
+    path = Path(raw).expanduser().resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
-def process_modelfile(path):
-    content = path.read_text()
-    hot_dir, cold_dir = get_paths()
-    lines = content.splitlines()
-    new_lines = []
-    needs_staging = False
-    for line in lines:
-        stripped = line.strip().upper()
-        if stripped.startswith('# STAGE:') or stripped.startswith('# STAGING:') or stripped.startswith('PARAMETER STAGING'):
-            if 'NVME' in stripped or 'HOT' in stripped:
-                needs_staging = True
-        new_lines.append(line)
+def preset_ready(path):
+    """False when a local FROM file is missing; remote tags pull on demand."""
+    root = models_dir()
+    source = next((line.split(None, 1)[1].strip() for line in path.read_text().splitlines()
+                   if line.strip().startswith('FROM ')), '')
+    if source.startswith('/models/'):
+        return (root / source[8:]).exists()
+    return True
 
-    if needs_staging:
-        for i, line in enumerate(new_lines):
-            if line.strip().startswith('FROM '):
-                parts = line.strip().split(None, 1)
-                if len(parts) == 2:
-                    src = parts[1].strip()
-                    if src.startswith('/models/cold/'):
-                        fname = src.replace('/models/cold/', '')
-                        cold_src = cold_dir / fname
-                        hot_dest = hot_dir / fname
-                        if not hot_dest.exists() and cold_src.exists():
-                            size_gib = cold_src.stat().st_size / (1024 ** 3)
-                            print(f'[PAIN] Auto-staging {fname} from vault to NVMe fast cache ({size_gib:.1f} GiB)...', flush=True)
-                            import shutil
-                            shutil.copy2(cold_src, hot_dest)
-                            print(f'[PAIN] Staging complete: {hot_dest}', flush=True)
-                        if hot_dest.exists():
-                            new_lines[i] = f'FROM /models/hot/{fname}'
-    return '\n'.join(new_lines) + '\n'
+
+def preset_downloads(path):
+    """[(url, bytes)] from '# Download: <https url> <bytes>' comment lines."""
+    found = []
+    for line in path.read_text().splitlines():
+        parts = line.split()
+        if parts[:2] == ['#', 'Download:'] and len(parts) > 2 and parts[2].startswith('https://'):
+            found.append((parts[2], int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0))
+    return found
+
+
+def preset_files(path):
+    """[(file in PAIN_MODELS_DIR, url or None, declared bytes)] a preset needs."""
+    root = models_dir()
+    files = {root / model_filename(urllib.parse.urlparse(url).path): (url, size)
+             for url, size in preset_downloads(path)}
+    for source in preset_sources(path):
+        if source and source.startswith('/models/'):
+            files.setdefault(root / source[8:], (None, 0))
+    return [(file, url, size) for file, (url, size) in files.items()]
+
+
+def preset_sources(path):
+    """The main and optional draft model used by the generated router preset."""
+    source = next((line.split(None, 1)[1].strip() for line in path.read_text().splitlines()
+                   if line.strip().startswith('FROM ')), '')
+    if 'muse-glimmer' in f'{path.parent.name}-{path.stem}':
+        return ('/models/Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf',
+                '/models/dflash-Muse-Glimmer-30B-Q4_K_M.gguf')
+    return source, None
+
+
+def checked_model_path(path, weight=False):
+    """Refuse traversal, links and non-files before changing model-store files."""
+    root = models_dir()
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        raise ValueError('Model files must stay inside the models folder.') from None
+    if not relative.parts or '..' in relative.parts:
+        raise ValueError('Model files must stay inside the models folder.')
+    if weight and not path.name.lower().endswith(('.gguf', '.gguf.part')):
+        raise ValueError('Only GGUF weights and their partial downloads can be removed.')
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f'{current.name} is a symbolic link; manage it outside PAIN.')
+    if path.exists() and not path.is_file():
+        raise ValueError(f'{path.name} is not a regular file.')
+    return relative
+
+
+@contextmanager
+def model_operation():
+    """Serialize CLI mutations too, including downloads and engine starts."""
+    path = models_dir() / '.pain-models.lock'
+    checked_model_path(path)
+    # Read access lets both the desktop user and an elevated engine command lock it.
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644), 'r') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Another PAIN model or engine operation is in progress.') from None
+        yield
+
+
+def removal_files(name, available=None):
+    available = available if available is not None else presets()
+    if name not in available:
+        raise ValueError(f'Unknown model preset: {name}')
+    files = [file for file, _, _ in preset_files(available[name])]
+    candidates = []
+    for file in files:
+        for candidate in (file, file.with_name(file.name + '.part')):
+            checked_model_path(candidate, weight=True)
+            if candidate.exists():
+                candidates.append(candidate)
+    if not candidates:
+        raise ValueError('No downloaded weights or partial download to remove.')
+    owned = {file.resolve() for file in files}
+    for other, path in available.items():
+        if other != name and any(file.resolve() in owned for file, _, _ in preset_files(path)):
+            raise ValueError(f'Weights are shared with {other}; keep them for that preset.')
+    for filename in (SELECTED, 'models.ini'):
+        checked_model_path(models_dir() / filename)
+    if RUNTIME_STATE.exists() or CONTAINER_STATE.exists():
+        raise ValueError('Stop the PAIN engine before removing model files.')
+    return candidates
+
+
+def unlink_model_file(path):
+    """Unlink relative to opened directories, never following a replaced link."""
+    relative = checked_model_path(path)
+    directory = os.open(models_dir(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in relative.parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        try:
+            info = os.stat(relative.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f'{path.name} is no longer a regular file; nothing was removed there.')
+        os.unlink(relative.name, dir_fd=directory)
+        return True
+    finally:
+        os.close(directory)
+
+
+def remove_model(name):
+    files = removal_files(name)
+    # Also protect an engine started outside this checkout, without saved state.
+    cfg = config()
+    try:
+        connection = socket.create_connection((cfg.get('PAIN_API_HOST', '127.0.0.1'),
+                                               int(cfg.get('PAIN_PORT', '11434'))), timeout=2)
+    except OSError as exc:
+        if exc.errno != errno.ECONNREFUSED:
+            raise ValueError('Could not confirm the PAIN engine is stopped. Try again after stopping it.') from exc
+    else:
+        connection.close()
+        raise ValueError('Stop the PAIN engine before removing model files.')
+    changed = False
+    try:
+        for file in files:
+            changed = unlink_model_file(file) or changed
+        changed = True
+    finally:
+        if changed:
+            marker = models_dir() / SELECTED
+            if marker.exists() and marker.read_text().strip() == name:
+                unlink_model_file(marker)
+            generate_models_ini()
+    print(f'Removed downloaded files for {name}. The preset remains available.')
+
+
+def model_catalog():
+    """Every preset with what the desktop app needs to list, fetch and select it."""
+    marker = models_dir() / SELECTED
+    selected = marker.read_text().strip() if marker.exists() else ''
+    rows = []
+    available = presets()
+    for name, path in available.items():
+        files = preset_files(path)
+        comment = next((line[1:].strip() for line in path.read_text().splitlines()
+                        if line.startswith('#')), '')
+        present = sum(f.stat().st_size for f, _, _ in files if f.exists())
+        partial = sum(p.stat().st_size for p in (f.with_name(f.name + '.part') for f, _, _ in files)
+                      if p.exists())
+        try:
+            removal_files(name, available)
+            remove_blocked = ''
+        except (OSError, ValueError, RuntimeError) as exc:
+            remove_blocked = str(exc)
+        rows.append({
+            'id': name, 'title': comment or (files[0][0].name if files else name),
+            'downloaded': bool(files) and all(f.exists() for f, _, _ in files),
+            'downloadable': any(url for _, url, _ in files),
+            'bytes': sum(size or (f.stat().st_size if f.exists() else 0) for f, _, size in files),
+            'received': present + partial, 'selected': name == selected,
+            'removable': not remove_blocked, 'remove_blocked': remove_blocked,
+        })
+    return rows
+
+
+def use_model(name):
+    row = next((row for row in model_catalog() if row['id'] == name), None)
+    if row is None:
+        raise ValueError(f'Unknown model preset: {name}')
+    if not row['downloaded']:
+        raise ValueError(f'{name} is not downloaded yet.')
+    (models_dir() / SELECTED).write_text(name + '\n')
+    print(f'Selected {name}. Restart the engine to load it.')
+
+
+def pull_preset(name):
+    files = preset_files(presets()[name])
+    missing = [(f, url, size) for f, url, size in files if url and not f.exists()]
+    partial = sum(p.stat().st_size for p in (f.with_name(f.name + '.part') for f, _, _ in missing)
+                  if p.exists())
+    needed = sum(size for _, _, size in missing) - partial
+    free = shutil.disk_usage(models_dir()).free
+    if needed > free:
+        raise ValueError(f'{name} needs {needed / 1e9:.1f} GB more disk space; '
+                         f'{free / 1e9:.1f} GB is free.')
+    for target, url, _ in missing:
+        download_file(url, target)
+    print(f'Downloaded {name}.')
 
 
 def generate_models_ini():
-    hot_dir, _ = get_paths()
-    ini_path = hot_dir / 'models.ini'
+    root = models_dir()
+    ini_path = root / 'models.ini'
     lines = [
         "version = 1",
-        "",
-        "[*]",
-        "ngl = 999",
-        "flash-attn = 1",
-        "mmap = 1",
         "",
     ]
     for name, path in presets().items():
         content = path.read_text()
-        model_src = None
+        model_src, draft_model = preset_sources(path)
         ctx = 65536
-        draft_model = None
-        draft_type = None
+        draft_type = 'draft-dflash' if draft_model else None
         batch = 512
         ubatch = 256
         threads = 8
         cpu_moe = 0
         moe_cache = 0
+        n_gpu_layers = None
 
         for line in content.splitlines():
             line = line.strip()
-            if line.startswith('FROM '):
-                src = line.split(None, 1)[1].strip()
-                if src.startswith('/models/cold/'):
-                    fname = src.replace('/models/cold/', '')
-                    model_src = f"/models/hot/{fname}"
-                else:
-                    model_src = src
             if line.startswith('PARAMETER num_ctx'):
                 try:
                     ctx = int(line.split()[2])
                 except Exception:
                     pass
-            if 'STAGE: NVME' in line.upper():
-                cpu_moe = 1
-                moe_cache = 36864
+            if line.startswith('PARAMETER num_gpu'):
+                try:
+                    n_gpu_layers = int(line.split()[2])
+                except Exception:
+                    pass
 
         if not model_src:
             continue
 
-        if 'muse-glimmer' in name:
-            model_src = "/root/.ollama/models/blobs/sha256-ac7023d6a4c704eb9af54ab53e476a66b7f5b6c0ef2fc4a8dde5253c291a6c38"
-            draft_model = "/root/.ollama/models/blobs/sha256-b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef"
-            draft_type = "draft-dflash"
-        elif 'qwen38' in name:
-            model_src = "/root/.ollama/models/blobs/sha256-11b33ad56023d8c119e7cf3ce744ea7aa5ffcc8be9ab7b5e408ec21bf584b80b"
+        # Only include presets whose weights are actually in PAIN_MODELS_DIR.
+        if model_src.startswith('/models/'):
+            if not (root / model_src[8:]).exists():
+                continue
+        if draft_model and draft_model.startswith('/models/'):
+            if not (root / draft_model[8:]).exists():
+                continue
 
         lines.append(f"[{name}]")
         lines.append(f"model = {model_src}")
@@ -312,16 +514,24 @@ def generate_models_ini():
             lines.append(f"spec-draft-model = {draft_model}")
         if draft_type:
             lines.append(f"spec-type = {draft_type}")
+        if n_gpu_layers is not None:
+            lines.append(f"n-gpu-layers = {n_gpu_layers}")
         lines.append(f"ctx-size = {ctx}")
-        lines.append(f"batch = {batch}")
-        lines.append(f"ubatch = {ubatch}")
-        lines.append(f"threads = {threads}")
-        if cpu_moe:
-            lines.append(f"cpu-moe = {cpu_moe}")
-            lines.append(f"moe-cache-mib = {moe_cache}")
         lines.append("")
 
-    ini_path.write_text('\n'.join(lines) + '\n')
+    checked_model_path(ini_path)
+    # Replace atomically so polling never sees a truncated file and a user-owned
+    # models folder can refresh an ini previously written by an elevated engine.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=root, prefix='.models.ini-', delete=False) as output:
+            temporary = Path(output.name)
+            output.write('\n'.join(lines) + '\n')
+        temporary.chmod(0o644)
+        os.replace(temporary, ini_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     print(f'[PAIN] Generated router presets: {ini_path}', flush=True)
 
 
@@ -341,6 +551,9 @@ def sync_opencode():
 
     for name, path in presets().items():
         content = path.read_text()
+        # Don't advertise a local preset before its weights are on disk.
+        if not preset_ready(path):
+            continue
         ctx = 65536
         predict = 8192
         first_comment = ""
@@ -380,18 +593,301 @@ def apply(name):
     if name not in available:
         raise ValueError(f'Unknown preset {name}. Use ./ai presets.')
     container()
-    modelfile_content = process_modelfile(available[name])
+    modelfile_content = available[name].read_text()
     # Stream the checked-in file through stdin, avoiding host-path mounts/copies.
-    compose_args = ['exec', '-T', 'ollama', 'sh', '-c',
+    compose_args = ['exec', '-T', 'engine', 'sh', '-c',
                     'f=$(mktemp); trap \'rm -f "$f"\' EXIT; cat > "$f"; '
                     'ollama create "$1" -f "$f"', 'sh', name]
     env = config()
     env['PAIN_BACKEND'] = backend()
-    subprocess.run(['docker', 'compose', '--project-directory', str(ROOT),
+    env['PAIN_MODELS_DIR'] = str(models_dir())
+    subprocess.run([runtime(), 'compose',
                     '-f', str(ROOT / 'compose.yaml'), '-f',
                     str(ROOT / 'backends' / f'{backend()}.yaml'), *compose_args],
-                   input=modelfile_content, text=True, env=env, check=True)
+                   input=modelfile_content, text=True, env=env, cwd=ROOT, check=True)
+    dedupe_ollama_import(name, modelfile_content)
     sync_opencode()
+
+
+def find_ollama_manifest(store, name, tag='latest'):
+    """Locate the manifest written by `ollama create` / `ollama pull`."""
+    name = name.strip('/')
+    candidates = []
+    for root in (store / 'manifests-v2', store / 'manifests'):
+        for host in ('ollama.com', 'registry.ollama.ai'):
+            candidates.append(root / host / 'library' / name / tag)
+            candidates.append(root / host / name / tag)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    for root in (store / 'manifests-v2', store / 'manifests'):
+        if root.exists():
+            for candidate in root.rglob(tag):
+                if str(candidate).endswith(f'/{name}/{tag}'):
+                    return candidate
+    return None
+
+
+def ollama_model_layer(manifest):
+    """Return the largest model layer described by an Ollama manifest."""
+    if manifest is None:
+        return None
+    try:
+        data = json.loads(manifest.read_text())
+    except (OSError, ValueError):
+        return None
+    layers = [layer for layer in data.get('layers', [])
+              if layer.get('mediaType') == 'application/vnd.ollama.image.model']
+    return max(layers, key=lambda layer: layer.get('size', 0)) if layers else None
+
+
+def try_hardlink(source, destination):
+    """Host-side hardlink. Returns False when the filesystem refuses."""
+    source, destination = Path(source), Path(destination)
+    if source.stat().st_dev != destination.parent.stat().st_dev:
+        return False
+    tmp = destination.with_name(destination.name + '.pain-link')
+    try:
+        if tmp.exists():
+            tmp.unlink()
+        os.link(source, tmp)
+        os.replace(tmp, destination)
+        return True
+    except OSError:
+        if tmp.exists():
+            tmp.unlink()
+        return False
+
+
+def dedupe_ollama_import(name, modelfile_content):
+    """Replace Ollama's imported blob with a hardlink to the source GGUF."""
+    source = next((line.split(None, 1)[1].strip()
+                   for line in modelfile_content.splitlines()
+                   if line.strip().startswith('FROM ')), '')
+    if not source.startswith('/models/'):
+        return
+    path = models_dir() / source[8:]
+    if not path.exists():
+        return
+    store = models_dir() / 'ollama'
+    layer = ollama_model_layer(find_ollama_manifest(store, name))
+    if not layer:
+        print(f'[PAIN] Warning: no Ollama manifest layer for {name}; '
+              'not deduplicating.', file=sys.stderr)
+        return
+    digest = layer.get('digest', '').split(':', 1)[-1]
+    blob = store / 'blobs' / f'sha256-{digest}'
+    if not blob.exists():
+        print(f'[PAIN] Warning: Ollama blob {digest[:12]} is missing; '
+              'not deduplicating.', file=sys.stderr)
+        return
+    if path.stat().st_size != blob.stat().st_size:
+        print(f'[PAIN] Warning: size mismatch for {name}; not deduplicating.',
+              file=sys.stderr)
+        return
+    if path.stat().st_ino == blob.stat().st_ino:
+        return
+    if not try_hardlink(path, blob):
+        # The Ollama store is root-owned; link from inside the running engine.
+        try:
+            compose('exec', '-T', 'engine', 'sh', '-c', 'ln -f "$1" "$2"', 'sh',
+                    source, f'/models/ollama/blobs/sha256-{digest}')
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    if path.stat().st_ino == blob.stat().st_ino:
+        print(f'[PAIN] Deduplicated Ollama import for {name} (hardlink).')
+    else:
+        print(f'[PAIN] Warning: could not hardlink {name}; left the copy in place.',
+              file=sys.stderr)
+
+
+def model_filename(name):
+    name = Path(name).name
+    safe = ''.join(char if char.isalnum() or char in '._-' else '_' for char in name)
+    if not safe.lower().endswith('.gguf'):
+        safe += '.gguf'
+    return safe or 'model.gguf'
+
+
+def resolve_download(source):
+    """Map a URL/HF source to (url, filename); return None for Ollama tags."""
+    if source.startswith(('http://', 'https://')):
+        path = urllib.parse.urlparse(source).path
+        return source, path.rsplit('/', 1)[-1] or 'model.gguf'
+    if source.startswith('hf.co/'):
+        parts = source[len('hf.co/'):].split('/', 2)
+        if len(parts) != 3:
+            raise ValueError('Hugging Face sources are hf.co/<owner>/<repo>/<file>.gguf')
+        repo, filename = '/'.join(parts[:2]), parts[2]
+        return (f'https://huggingface.co/{repo}/resolve/main/{filename}',
+                filename.rsplit('/', 1)[-1])
+    if ':' in source:
+        repo, _, filename = source.rpartition(':')
+        if filename.lower().endswith('.gguf'):
+            return (f'https://huggingface.co/{repo}/resolve/main/{filename}',
+                    filename.rsplit('/', 1)[-1])
+    if source.lower().endswith('.gguf') and source.count('/') >= 2:
+        parts = source.split('/', 2)
+        repo, filename = '/'.join(parts[:2]), parts[2]
+        return (f'https://huggingface.co/{repo}/resolve/main/{filename}',
+                filename.rsplit('/', 1)[-1])
+    return None
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    """Drop the HF token when a redirect crosses hosts (for example to a CDN)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            old_host = urllib.parse.urlparse(req.full_url).hostname
+            new_host = urllib.parse.urlparse(newurl).hostname
+            if new_host != old_host:
+                new.headers.pop('Authorization', None)
+                new.unredirected_hdrs.pop('Authorization', None)
+        return new
+
+
+def download_file(url, destination, expected_sha256=None, force=False):
+    destination = Path(destination)
+    if destination.exists() and not force:
+        if expected_sha256:
+            if sha256_file(destination).lower() != expected_sha256.lower():
+                raise ValueError(f'{destination} exists but its SHA-256 does not match; '
+                                 'use --force to replace it.')
+            print(f'[PAIN] {destination} already exists and matches SHA-256.')
+        else:
+            print(f'[PAIN] {destination} already exists; use --force to replace it.')
+        return destination
+    part = destination.with_name(destination.name + '.part')
+    offset = part.stat().st_size if part.exists() else 0
+    headers = {'User-Agent': 'PAIN/1.0'}
+    host = urllib.parse.urlparse(url).hostname or ''
+    token = os.environ.get('HF_TOKEN') or config().get('HF_TOKEN')
+    if token and (host == 'huggingface.co' or host.endswith('.huggingface.co')
+                  or host.endswith('hf.co')):
+        headers['Authorization'] = f'Bearer {token}'
+    if offset:
+        headers['Range'] = f'bytes={offset}-'
+    request = urllib.request.Request(url, headers=headers)
+    opener = urllib.request.build_opener(_SafeRedirect())
+    try:
+        response = opener.open(request, timeout=60)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 416 and offset:
+            response = None
+        else:
+            raise
+    if response is not None:
+        if getattr(response, 'status', 200) != 206:
+            offset = 0
+        total = None
+        content_range = response.headers.get('Content-Range', '')
+        if '/' in content_range:
+            try:
+                total = int(content_range.rsplit('/', 1)[1])
+            except ValueError:
+                total = None
+        elif response.headers.get('Content-Length'):
+            total = offset + int(response.headers['Content-Length'])
+        done = offset
+        started = last = time.monotonic()
+        with part.open('ab' if offset else 'wb') as out:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                done += len(chunk)
+                now = time.monotonic()
+                if now - last >= 0.5:
+                    speed = (done - offset) / max(now - started, 0.001) / (1024 * 1024)
+                    if total:
+                        print(f'\r  {destination.name}: {100.0 * done / total:5.1f}%  '
+                              f'{done / 1e9:.2f}/{total / 1e9:.2f} GB  '
+                              f'{speed:5.1f} MiB/s', end='', flush=True)
+                    else:
+                        print(f'\r  {destination.name}: {done / 1e9:.2f} GB  '
+                              f'{speed:5.1f} MiB/s', end='', flush=True)
+                    last = now
+        response.close()
+        print()
+        if total is not None and done != total:
+            raise ValueError(f'incomplete download: {done} of {total} bytes')
+    if not part.exists():
+        raise ValueError('download produced no file')
+    if expected_sha256 and sha256_file(part).lower() != expected_sha256.lower():
+        part.unlink()
+        raise ValueError(f'SHA-256 mismatch for {url}')
+    os.replace(part, destination)
+    print(f'[PAIN] {destination} ({destination.stat().st_size / 1e9:.2f} GB)')
+    return destination
+
+
+def pull_ollama(tag, name=None, force=False):
+    store = models_dir() / 'ollama'
+    store.mkdir(parents=True, exist_ok=True)
+    image = config().get('PAIN_VULKAN_IMAGE', 'ollama/ollama:0.40.13')
+    script = ('ollama serve >/tmp/ollama-serve.log 2>&1 & '
+              'for i in $(seq 1 60); do ollama list >/dev/null 2>&1 && break; sleep 0.5; done; '
+              'ollama pull "$1"')
+    subprocess.run([runtime(), 'run', '--rm',
+                    '-v', f'{models_dir()}:/models',
+                    '-e', 'OLLAMA_MODELS=/models/ollama',
+                    '--entrypoint', 'sh', image, '-c', script, 'sh', tag], check=True)
+    model, _, version = tag.partition(':')
+    layer = ollama_model_layer(find_ollama_manifest(store, model, version or 'latest'))
+    if not layer:
+        raise ValueError(f'pulled {tag}, but could not find its manifest layer')
+    digest = layer.get('digest', '').split(':', 1)[-1]
+    blob = store / 'blobs' / f'sha256-{digest}'
+    if not blob.exists():
+        raise ValueError(f'pulled {tag}, but blob {digest[:12]} is missing')
+    destination = models_dir() / model_filename(
+        name or tag.replace(':', '-').replace('/', '_'))
+    if destination.exists() and not force:
+        print(f'[PAIN] {destination} already exists; use --force to replace it.')
+        return destination
+    if try_hardlink(blob, destination):
+        print(f'[PAIN] {destination} (hardlink to Ollama blob {digest[:12]})')
+        return destination
+    # The Ollama store is root-owned; link from inside a throwaway container.
+    try:
+        subprocess.run([runtime(), 'run', '--rm',
+                        '-v', f'{models_dir()}:/models',
+                        '--entrypoint', 'sh', image, '-c', 'ln -f "$1" "$2"', 'sh',
+                        f'/models/ollama/blobs/sha256-{digest}',
+                        f'/models/{destination.name}'], check=True)
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    if destination.exists() and blob.stat().st_ino == destination.stat().st_ino:
+        print(f'[PAIN] {destination} (hardlink to Ollama blob {digest[:12]})')
+    else:
+        shutil.copy2(blob, destination)
+        print(f'[PAIN] {destination} (copied from Ollama blob {digest[:12]})')
+    return destination
+
+
+def pull(source, name=None, sha256=None, force=False):
+    resolved = resolve_download(source)
+    if resolved:
+        url, default_name = resolved
+        result = download_file(url, models_dir() / model_filename(name or default_name),
+                               expected_sha256=sha256, force=force)
+    else:
+        if sha256:
+            raise ValueError('--sha256 only applies to URL and Hugging Face downloads.')
+        result = pull_ollama(source, name=name, force=force)
+    print(f'[PAIN] Preset source: FROM /models/{result.name}')
+    return result
 
 
 def rate(count, duration):
@@ -434,6 +930,13 @@ def host_telemetry():
     return telemetry
 
 
+def host_value(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return None
+
+
 def benchmark(args):
     require_llm('bench')
     details = container()
@@ -446,11 +949,6 @@ def benchmark(args):
     destination = ROOT / 'benchmarks' / 'results' / (
         dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ') + '.jsonl')
     destination.parent.mkdir(parents=True, exist_ok=True)
-    def host_value(path):
-        try:
-            return Path(path).read_text().strip()
-        except OSError:
-            return None
     metadata = {
         'model': args.model, 'model_details': model.get('details'),
         'model_parameters': model.get('parameters'),
@@ -522,6 +1020,111 @@ def nonnegative(value):
     return value
 
 
+def lab_image_id():
+    try:
+        return subprocess.check_output(
+            [runtime(), 'inspect', '-f', '{{.Id}}', 'pain-lab'], text=True).strip()
+    except subprocess.CalledProcessError as exc:
+        raise ValueError('Lab image not built. Run ./ai lab build first.') from exc
+
+
+def code_git(code):
+    """Best-effort git identity of the mounted code directory."""
+    try:
+        rev = subprocess.check_output(
+            ['git', '-C', str(code), 'rev-parse', 'HEAD'],
+            text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    dirty = subprocess.run(
+        ['git', '-C', str(code), 'diff', '--quiet'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0
+    return {'rev': rev, 'dirty': dirty}
+
+
+def lab_run_args(args, shell=False):
+    cfg = config()
+    code_raw = args.code or cfg.get('PAIN_LAB_CODE')
+    if not code_raw:
+        raise ValueError('Lab runs need --code DIR (or PAIN_LAB_CODE in .env).')
+    code = Path(code_raw).expanduser().resolve()
+    experiments = Path(cfg.get('PAIN_LAB_EXPERIMENTS', str(ROOT / 'experiments'))).expanduser().resolve()
+    experiments.mkdir(parents=True, exist_ok=True)
+    threads = getattr(args, 'threads', None) or cfg.get('PAIN_LAB_THREADS', '8')
+    seed = getattr(args, 'seed', None) or cfg.get('PAIN_LAB_SEED', '0')
+    argv = [runtime(), 'run', '--rm',
+            '-v', f'{code}:/workspace/code',
+            '-v', f'{experiments}:/workspace/experiments',
+            '-v', 'pain-lab-data:/data',
+            '-e', 'PYTHONHASHSEED=0',
+            '-e', f'OMP_NUM_THREADS={threads}',
+            '-e', f'MKL_NUM_THREADS={threads}',
+            '-e', f'SEED={seed}',
+            '-w', '/workspace/code']
+    if shell:
+        argv += ['-it', '--entrypoint', 'bash', 'pain-lab']
+    else:
+        if not args.cmd:
+            raise ValueError('No command given for ./ai lab run.')
+        # argparse REMAINDER can capture the literal '--' separator first.
+        cmd = list(args.cmd)
+        if cmd and cmd[0] == '--':
+            cmd = cmd[1:]
+        if not cmd:
+            raise ValueError('No command given for ./ai lab run.')
+        argv += ['pain-lab'] + cmd
+    record = {'utc': dt.datetime.now(dt.timezone.utc).isoformat(),
+              'command': argv,
+              'image_id': lab_image_id(),
+              'code_dir': str(code),
+              'code_git': code_git(code),
+              'threads': threads,
+              'seed': seed,
+              'hostname': socket.gethostname(),
+              'platform_profile': host_value('/sys/firmware/acpi/platform_profile')}
+    record['run_id'] = hashlib.sha256(
+        (record['utc'] + json.dumps(record['command'])).encode()).hexdigest()[:12]
+    return argv, record
+
+
+def lab(args):
+    if args.lab_command == 'build':
+        subprocess.run([runtime(), 'build', '-t', 'pain-lab',
+                        '-f', str(ROOT / 'lab' / 'Dockerfile'), str(ROOT / 'lab')], check=True)
+        print(f'PAIN lab image ready: {lab_image_id()}')
+        return
+    if args.lab_command == 'ps':
+        result = subprocess.run(
+            [runtime(), 'ps', '--filter', 'ancestor=pain-lab',
+             '--format', '{{.ID}}\t{{.RunningFor}}\t{{.Command}}'],
+            capture_output=True, text=True, check=True)
+        if not result.stdout.strip():
+            print('No lab containers running.')
+            return
+        print('ID\tAGE\tCOMMAND')
+        print(result.stdout, end='')
+        return
+    argv, record = lab_run_args(args, shell=(args.lab_command == 'shell'))
+    if args.lab_command == 'shell':
+        subprocess.run(argv, check=False)
+        return
+    print(f'[PAIN lab] image {record["image_id"]}', flush=True)
+    print(f'[PAIN lab] code {record["code_dir"]} seed={record["seed"]} threads={record["threads"]}',
+          flush=True)
+    print(f'[PAIN lab] running: {" ".join(args.cmd)}', flush=True)
+    started = time.monotonic()
+    completed = subprocess.run(argv, check=False)
+    record['exit_code'] = completed.returncode
+    record['duration_s'] = round(time.monotonic() - started, 3)
+    runs = ROOT / 'experiments' / 'lab_runs.jsonl'
+    runs.parent.mkdir(parents=True, exist_ok=True)
+    with runs.open('a') as out:
+        out.write(json.dumps(record) + '\n')
+    print(f'[PAIN lab] exit {completed.returncode}; provenance: {runs}', flush=True)
+    if completed.returncode:
+        raise ValueError(f'lab run failed with exit code {completed.returncode}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -529,14 +1132,30 @@ def main():
     p.add_argument('backend', choices=(*LLM_BACKENDS, *comfy_backend.choices()))
     if comfy_backend.choices():
         p.add_argument('--device', choices=('rocm', 'cuda'), help='Choose the GPU vendor for ComfyUI')
-    for name in ('down', 'status', 'logs', 'presets', 'top', 'sync'):
+    for name in ('down', 'status', 'presets', 'top', 'sync'):
         sub.add_parser(name)
+    p = sub.add_parser('logs', help='Show engine logs')
+    p.add_argument('--once', action='store_true', help='Print recent logs without following')
+    p = sub.add_parser('models', help='List presets with download and selection state')
+    p.add_argument('--json', action='store_true')
+    p = sub.add_parser('use', help='Select the preset a single-model engine serves')
+    p.add_argument('preset')
+    p = sub.add_parser('remove', help='Remove a preset\'s local GGUF weights and partial downloads')
+    p.add_argument('preset')
+    p.add_argument('--yes', action='store_true', help='Confirm removal of local model files')
+    p = sub.add_parser('add-model', help='Download a GGUF and register a small-context local preset')
+    p.add_argument('url')
     p = sub.add_parser('config', help='Render a backend Compose configuration')
     p.add_argument('backend', choices=(*LLM_BACKENDS, *comfy_backend.choices()))
     if comfy_backend.choices():
         p.add_argument('--device', choices=('rocm', 'cuda'), help='Choose the GPU vendor for ComfyUI')
-    p = sub.add_parser('pull', help='Download an Ollama model')
-    p.add_argument('model')
+    p = sub.add_parser('pull', help='Download a GGUF into PAIN_MODELS_DIR')
+    p.add_argument('source',
+                   help='HTTP(S) URL, hf.co/<owner>/<repo>/<file>.gguf, '
+                        '<repo>:<file>.gguf, or an Ollama tag')
+    p.add_argument('--name', help='Output filename (default: derived from the source)')
+    p.add_argument('--sha256', help='Expected SHA-256 for file downloads')
+    p.add_argument('--force', action='store_true', help='Replace an existing file')
     p = sub.add_parser('apply', help='Create a named model from a checked-in preset')
     p.add_argument('preset', choices=list(presets()))
     p = sub.add_parser('run', help='Chat with a model')
@@ -554,20 +1173,50 @@ def main():
     p.add_argument('--repeats', type=positive, default=3)
     p.add_argument('--think', choices=('on', 'off'), default='off')
     p.add_argument('--note', default='', help='Record AC power, thermal conditions, etc.')
+    p = sub.add_parser('lab', help='Run jobs in the pinned CPU training image')
+    lab_sub = p.add_subparsers(dest='lab_command', required=True)
+    p = lab_sub.add_parser('build', help='Build the lab image from lab/Dockerfile')
+    p = lab_sub.add_parser('ps', help='List running lab containers')
+    for name in ('run', 'shell'):
+        p = lab_sub.add_parser(name,
+                               help='Run a command / open a shell inside the lab image')
+        p.add_argument('--code', help='Code directory mounted at /workspace/code '
+                                      '(default: PAIN_LAB_CODE)')
+        p.add_argument('--threads', help='OMP/MKL thread count (default: 8)')
+        if name == 'run':
+            p.add_argument('--seed', help='SEED environment value (default: 0)')
+            p.add_argument('cmd', nargs=argparse.REMAINDER,
+                           help='Command to run in the container (after all options)')
     args = parser.parse_args()
+    if args.command == 'remove' and not args.yes:
+        parser.error('Model removal requires explicit confirmation: ./ai remove <preset> --yes')
+    if args.command in ('up', 'down', 'use', 'pull', 'remove', 'add-model', 'apply', 'sync'):
+        with model_operation():
+            execute(args)
+    else:
+        execute(args)
+
+
+def execute(args):
     if args.command == 'up':
         up(args.backend, getattr(args, 'device', None))
     elif args.command == 'config':
         compose('config', selected=comfy_backend.resolve(args.backend, getattr(args, 'device', None)))
     elif args.command == 'down':
         compose('down')
+        RUNTIME_STATE.unlink(missing_ok=True)
+        CONTAINER_STATE.unlink(missing_ok=True)
     elif args.command == 'logs':
-        compose('logs', '-f', '--tail', '100', 'ollama')
+        compose('logs', *([] if args.once else ['-f']), '--tail', '100', 'engine')
     elif args.command == 'status':
         compose('ps')
         if backend() in comfy_backend.BACKENDS:
             print(comfy_backend.url(config()))
             print(json.dumps(comfy_backend.api(config()), indent=2))
+        elif backend().startswith('llamacpp'):
+            port = config().get('PAIN_PORT', '11434')
+            with urllib.request.urlopen(f"http://{config().get('PAIN_API_HOST', '127.0.0.1')}:{port}/models", timeout=10) as response:
+                print(json.dumps(json.load(response), indent=2))
         else:
             print(json.dumps(api('ps'), indent=2))
     elif args.command == 'top':
@@ -581,13 +1230,43 @@ def main():
             print(f'{name:32} {path.relative_to(ROOT)}')
     elif args.command == 'apply':
         apply(args.preset)
-    elif args.command in ('pull', 'run'):
+    elif args.command == 'add-model':
+        if not args.url.startswith('https://'):
+            raise ValueError('Use an HTTPS GGUF URL.')
+        target = pull(args.url)
+        if target is None:
+            raise ValueError('Download did not return a model path.')
+        name = hashlib.sha256(str(target).encode()).hexdigest()[:12]
+        preset = ROOT / 'models' / f'local-{name}' / 'default.Modelfile'
+        preset.parent.mkdir(parents=True, exist_ok=True)
+        # A coding agent's system prompt alone is about 10k tokens.
+        preset.write_text(f'FROM /models/{target.name}\nPARAMETER num_ctx 32768\n')
+        print(f'Added local-{name}-default. Restart the engine to load it.')
+    elif args.command == 'models':
+        rows = model_catalog()
+        if args.json:
+            print(json.dumps(rows))
+        else:
+            for row in rows:
+                state = 'selected' if row['selected'] else 'ready' if row['downloaded'] else 'missing'
+                print(f"{row['id']:40} {state:9} {row['bytes'] / 1e9:6.1f} GB")
+    elif args.command == 'use':
+        use_model(args.preset)
+    elif args.command == 'remove':
+        remove_model(args.preset)
+    elif args.command == 'pull' and args.source in presets() and preset_downloads(presets()[args.source]):
+        pull_preset(args.source)
+    elif args.command == 'pull':
+        pull(args.source, name=args.name, sha256=args.sha256, force=args.force)
+    elif args.command == 'run':
         require_llm(args.command)
         container()
-        extra = ['--keepalive', args.keepalive] if args.command == 'run' else []
-        compose('exec', 'ollama', 'ollama', args.command, args.model, *extra)
+        compose('exec', 'engine', 'ollama', 'run', args.model,
+                '--keepalive', args.keepalive)
     elif args.command == 'bench':
         benchmark(args)
+    elif args.command == 'lab':
+        lab(args)
 
 
 if __name__ == '__main__':

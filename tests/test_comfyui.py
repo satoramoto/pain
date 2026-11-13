@@ -103,9 +103,11 @@ class LifecycleTest(unittest.TestCase):
         self.state.write_text('vulkan\n')
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
-        for name, value in [('STATE', self.state), ('CONTAINER_STATE', self.root / 'container.json')]:
+        for name, value in [('STATE', self.state), ('CONTAINER_STATE', self.root / 'container.json'),
+                            ('RUNTIME_STATE', self.root / 'runtime')]:
             self.stack.enter_context(patch.object(pain, name, value))
-        self.stack.enter_context(patch.object(pain, 'config', return_value={'PAIN_COMFYUI_PORT': '8199'}))
+        self.stack.enter_context(patch.object(pain, 'config', return_value={
+            'PAIN_COMFYUI_PORT': '8199', 'PAIN_MODELS_DIR': str(self.root / 'models')}))
         self.stack.enter_context(patch.object(comfy, 'check_host'))
         self.cleanup = self.stack.enter_context(patch.object(pain, 'remove_probe'))
         self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
@@ -141,7 +143,7 @@ class LifecycleTest(unittest.TestCase):
         with patch.object(pain, 'compose') as compose, \
              patch.object(pain, 'container', return_value={'Image': 'pinned'}), \
              patch.object(comfy, 'api', return_value=self.stats), \
-             patch.object(pain, 'get_paths') as paths, \
+             patch.object(pain, 'models_dir') as paths, \
              patch.object(pain, 'apply') as apply, \
              patch.object(pain, 'sync_opencode') as sync:
             pain.up_comfyui('comfyui-rocm')
@@ -168,7 +170,8 @@ class LifecycleTest(unittest.TestCase):
     def test_llm_commands_refuse_comfyui_before_calling_ollama(self):
         self.state.write_text('comfyui-cuda\n')
         with patch.object(pain, 'api') as api, patch.object(pain, 'compose') as compose:
-            for command in [['pull', 'model'], ['run', 'model'], ['bench', 'model'], ['sync'], ['top']]:
+            # Pull downloads independently of the active engine.
+            for command in [['run', 'model'], ['bench', 'model'], ['sync'], ['top']]:
                 with self.subTest(command=command), patch('sys.argv', ['ai', *command]):
                     with self.assertRaisesRegex(ValueError, 'LLM command'):
                         pain.main()
@@ -179,7 +182,7 @@ class LifecycleTest(unittest.TestCase):
 
     def test_switch_back_takes_original_llm_path(self):
         self.state.write_text('comfyui-rocm\n')
-        with patch.object(pain, 'get_paths'), patch.object(pain, 'compose') as compose, \
+        with patch.object(pain, 'models_dir'), patch.object(pain, 'compose') as compose, \
              patch.object(pain, 'container', return_value={}), \
              patch.object(pain, 'api', return_value={'version': 'test'}), \
              patch.object(pain, 'presets', return_value={}), patch.object(pain, 'sync_opencode'), \

@@ -1,8 +1,8 @@
 name: pain
 
 services:
-  # Keep main's service identity so switching replaces the existing pain-engine.
-  ollama:
+  # Share the LLM service identity so switching replaces pain-engine.
+  engine:
     container_name: pain-engine
     restart: "no"
     init: true

@@ -1,0 +1,68 @@
+{
+  "offline": {
+    "backend": "llamacpp-metal",
+    "engine": "llama.cpp",
+    "backends": [
+      "llamacpp-metal",
+      "llamacpp-cpu"
+    ],
+    "online": false,
+    "runtimeReady": true
+  },
+  "ready": {
+    "backend": "llamacpp-metal",
+    "engine": "llama.cpp",
+    "backends": [
+      "llamacpp-metal",
+      "llamacpp-cpu"
+    ],
+    "online": true,
+    "model_alias": "local-default",
+    "inference": {
+      "n_ctx": 4096,
+      "prompt": 0,
+      "decoded": 0
+    },
+    "runtimeReady": true
+  },
+  "generating": {
+    "backend": "llamacpp-metal",
+    "engine": "llama.cpp",
+    "backends": [
+      "llamacpp-metal",
+      "llamacpp-cpu"
+    ],
+    "online": true,
+    "model_alias": "local-default",
+    "inference": {
+      "n_ctx": 4096,
+      "prompt": 1024,
+      "decoded": 128,
+      "processing": true
+    },
+    "speed": 24.5,
+    "runtimeReady": true
+  },
+  "starting": {
+    "backend": "llamacpp-metal",
+    "engine": "llama.cpp",
+    "backends": [
+      "llamacpp-metal",
+      "llamacpp-cpu"
+    ],
+    "online": false,
+    "busy": "STARTING",
+    "runtimeReady": true
+  },
+  "failure": {
+    "backend": "llamacpp-metal",
+    "engine": "llama.cpp",
+    "backends": [
+      "llamacpp-metal",
+      "llamacpp-cpu"
+    ],
+    "online": false,
+    "error": "No VirtGPU Metal device enumerated. Check the PAIN runtime and restart the VM.",
+    "runtimeReady": true
+  }
+}

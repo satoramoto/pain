@@ -1,28 +1,12 @@
 name: pain
 
 services:
-  ollama:
+  engine:
     container_name: pain-engine
     restart: "no"
     ports:
       - "127.0.0.1:${PAIN_PORT:-11434}:11434"
     volumes:
-      - models:/root/.ollama
-      - "${PAIN_HOT_DIR:-/home/ryan/.local/share/pain/models}:/models/hot"
-      - "${PAIN_COLD_DIR:-/home/ryan/.local/share/pain/vault}:/models/cold"
-    environment:
-      OLLAMA_HOST: "0.0.0.0:11434"
-      OLLAMA_NO_CLOUD: "1"
-      OLLAMA_CONTEXT_LENGTH: "${PAIN_CONTEXT_LENGTH:-65536}"
-      OLLAMA_NUM_PARALLEL: "1"
-      OLLAMA_MAX_LOADED_MODELS: "1"
-      OLLAMA_FLASH_ATTENTION: "1"
-      OLLAMA_KV_CACHE_TYPE: "${PAIN_KV_CACHE_TYPE:-f16}"
-      OLLAMA_KEEP_ALIVE: "${PAIN_KEEP_ALIVE:-30m}"
+      - "${PAIN_MODELS_DIR:?Set PAIN_MODELS_DIR or use ./ai}:/models"
     labels:
       ai.pain.backend: "${PAIN_BACKEND}"
-
-volumes:
-  models:
-    external: true
-    name: "${PAIN_MODELS_VOLUME:-ollama}"

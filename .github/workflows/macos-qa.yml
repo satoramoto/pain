@@ -1,0 +1,155 @@
+name: Mac QA
+on:
+  push:
+    branches: ['fix/mac-virtgpu']
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      signed:
+        description: Require Developer ID signing and notarization
+        type: boolean
+        default: true
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python3 -m unittest discover -s tests -v
+      - run: npm --prefix desktop ci
+      - run: npm --prefix desktop run build
+      - run: npm --prefix desktop run build-storybook
+      - run: npm --prefix desktop run test:stories -- --no-browser
+  mac-runtime:
+    needs: checks
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      # Adapted from openflowfm/visuals: temporary keychain + App Store Connect API.
+      - name: Prepare signing
+        id: signing
+        env:
+          REQUIRE_SIGNING: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.signed) }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/ci/macos-signing.sh prepare
+      - name: Validate release version
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, re
+          version = json.load(open('desktop/src-tauri/tauri.conf.json'))['version']
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version), 'Only stable release versions are supported'
+          assert os.environ['RELEASE_TAG'] == 'v' + version, 'Tag must match app version'
+          PYTHON
+      - name: Check Apple Silicon builder
+        run: test "$(uname -m)" = arm64
+      - name: Install build dependencies on CI only
+        run: |
+          brew install cmake meson ninja pkgconf libepoxy molten-vk
+          brew tap slp/krun
+          brew trust slp/krun
+          brew install slp/krun/krunkit
+          # virglrenderer's Meson build imports PyYAML from the python3 on PATH.
+          python3 -m venv "$RUNNER_TEMP/build-python"
+          "$RUNNER_TEMP/build-python/bin/pip" install pyyaml
+          echo "$RUNNER_TEMP/build-python/bin" >> "$GITHUB_PATH"
+      - name: Build relocatable APIR and Metal runtime
+        run: ./integrations/macos/build-runtime
+      - name: Notarize the private runtime
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/ci/macos-signing.sh runtime
+      - name: Upload runtime and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: pain-macos-runtime-arm64-${{ steps.signing.outputs.signed == 'true' && 'signed' || 'unsigned' }}
+          path: |
+            .build/pain-macos-runtime-arm64.tar.gz
+            .build/pain-macos-runtime-arm64.tar.gz.sha256
+          if-no-files-found: error
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install desktop build dependencies
+        run: npm --prefix desktop ci
+      - name: Validate controller and UI
+        run: |
+          npm --prefix desktop run build-storybook
+      - name: Stage application resources
+        run: npm --prefix desktop run stage
+      - name: Build Tauri Mac application
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          RELEASE_BUILD: ${{ github.ref_type == 'tag' }}
+          SIGNED_BUILD: ${{ steps.signing.outputs.signed }}
+          APPLE_API_KEY: ${{ steps.signing.outputs.signed == 'true' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ steps.signing.outputs.signed == 'true' && secrets.APPLE_API_ISSUER || '' }}
+        run: |
+          if [ "$SIGNED_BUILD" != true ]; then unset APPLE_API_KEY APPLE_API_ISSUER; fi
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            test -n "$TAURI_UPDATER_PUBLIC_KEY" || { echo '::error::Missing TAURI_UPDATER_PUBLIC_KEY repository variable'; exit 1; }
+            python3 - <<'PYTHON'
+          import json, os
+          with open(os.environ['RUNNER_TEMP'] + '/pain-updater.json', 'w') as config:
+              json.dump({'bundle': {'createUpdaterArtifacts': True}, 'plugins': {'updater': {'pubkey': os.environ['TAURI_UPDATER_PUBLIC_KEY']}}}, config)
+          PYTHON
+            npm run tauri build -- --target aarch64-apple-darwin --config "$RUNNER_TEMP/pain-updater.json"
+          elif [ "$RELEASE_BUILD" = true ]; then
+            echo '::error::Stable releases require TAURI_SIGNING_PRIVATE_KEY'; exit 1
+          else
+            npm run tauri build -- --target aarch64-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          fi
+      - name: Notarize and verify the disk image
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/ci/macos-signing.sh verify
+      - name: Upload Mac application
+        uses: actions/upload-artifact@v4
+        with:
+          name: pain-macos-app-arm64-${{ steps.signing.outputs.signed == 'true' && 'signed' || 'unsigned' }}
+          path: desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+      - name: Stage signed update
+        env:
+          HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_UPDATER_KEY" = true ]; then python3 scripts/ci/updater-manifest.py; fi
+      - name: Upload updater QA artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pain-macos-updater-arm64
+          path: .build/update/*
+          if-no-files-found: warn
+      - name: Publish stable release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # Keep the feed invisible until every asset is uploaded successfully.
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "PAIN $RELEASE_TAG" --generate-notes
+          gh release upload "$RELEASE_TAG" .build/update/* desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+      - name: Remove signing credentials
+        if: always()
+        run: bash scripts/ci/macos-signing.sh cleanup

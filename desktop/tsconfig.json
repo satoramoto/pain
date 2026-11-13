@@ -1,0 +1,1 @@
+{"compilerOptions": {"target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler", "lib": ["ES2022", "DOM", "DOM.Iterable"], "strict": true, "allowJs": true, "skipLibCheck": true, "noEmit": true, "resolveJsonModule": true, "jsx": "react-jsx", "allowImportingTsExtensions": true, "customConditions": ["zen-source"]}, "include": ["src"]}

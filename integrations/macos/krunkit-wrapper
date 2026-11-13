@@ -1,0 +1,14 @@
+#!/bin/sh
+# Set loader variables after entering the system shell (SIP can strip inheritance).
+# GGML_NO_BACKTRACE: APIR reloads libggml-base per guest process, and ggml's
+# terminate-handler setup aborts the whole VM when it reloads at the same address.
+set -eu
+runtime=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec /usr/bin/env \
+  DYLD_LIBRARY_PATH="$runtime/lib" \
+  VIRGL_APIR_BACKEND_LIBRARY="$runtime/lib/libggml-virtgpu-backend.dylib" \
+  APIR_LLAMA_CPP_GGML_LIBRARY_PATH="$runtime/lib/libggml-metal.dylib" \
+  APIR_LLAMA_CPP_GGML_LIBRARY_REG=ggml_backend_metal_reg \
+  VIRGL_ROUTE_VENUS_TO_APIR=1 \
+  GGML_NO_BACKTRACE=1 \
+  "$runtime/libexec/krunkit.real" "$@"

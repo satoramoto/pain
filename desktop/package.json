@@ -1,0 +1,45 @@
+{
+  "name": "pain-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "node ../scripts/prepare-ui.mjs",
+    "dev": "vite --host 127.0.0.1",
+    "build": "npm run prepare && tsc --noEmit && vite build",
+    "storybook": "storybook dev -p 6016 --host 127.0.0.1 --no-open",
+    "build-storybook": "npm run prepare && storybook build",
+    "tauri": "tauri",
+    "stage": "node ../scripts/stage-desktop.mjs",
+    "check:stories": "node check-stories.mjs",
+    "test:stories": "zen-stories"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@satoramoto/zen": "https://github.com/satoramoto/zen/archive/3687905c0ae61f548b79bd3eb7b50f1746c9b870.tar.gz",
+    "@storybook/react-vite": "^10.6.7",
+    "@tauri-apps/cli": "^2.10.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.2.3",
+    "jsdom": "^26.1.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "story-spec": "https://github.com/satoramoto/story-spec/archive/cbfaa1b6d1b5dcb80ae0d03184d46241d96f8a76.tar.gz",
+    "storybook": "10.6.7",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "glob": "^14.0.2",
+    "minimatch": "^11.0.1",
+    "katex": "^0.18.2",
+    "story-spec": "$story-spec",
+    "use-resize-observer": "10.0.0"
+  }
+}
