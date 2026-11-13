@@ -1,13 +1,12 @@
 import { column, row, text, button, section } from './.generated/ui.mjs';
 import * as Model from './.generated/model.mjs';
 
-// The manager and native guide use Zen's portable controls. The richer original
-// dashboard keeps its native primitives and a Mac binding of Model.panelState.
+// Shared model-manager and guide subtrees consumed by App.mjs.
 function actionButton(ui, label, action, payload, props = {}) {
-  return button(label, action, {
+  return button(label, action, Object.assign({
     payload, focusKey: action + ':' + (payload || ''),
-    cursor: ui.cursor === action + ':' + (payload || ''), ...props,
-  });
+    cursor: ui.cursor === action + ':' + (payload || ''),
+  }, props));
 }
 
 export function view(status, ui = {}) {
@@ -34,7 +33,7 @@ export function view(status, ui = {}) {
     if (ui.removeId === model.id && hasFiles) {
       content.push(text('Remove ' + model.title + '?', { tone: 'danger', detail: 'Deletes this model’s downloaded files and partial downloads. Download it again to use it later.' }));
       content.push(row([
-        actionButton(ui, 'Cancel', 'cancel-remove', model.id),
+        actionButton(ui, 'Cancel', 'cancel-remove', model.id, { autoFocus: true }),
         actionButton(ui, 'Remove files', 'confirm-remove', model.id, { disabled: busy || !!reason }),
       ]));
     }
@@ -50,11 +49,11 @@ export function view(status, ui = {}) {
 export function guide(status, ui = {}) {
   return column([
     row([text('Getting Started', { grow: true }), actionButton(ui, 'Back', 'dashboard')]),
-    text('Your private AI workspace', { detail: 'PAIN runs models on this computer and serves them on localhost:11434.' }),
-    section('1 · Choose a backend', [text('Use the backend chips on the dashboard. Start applies the selected backend; Restart replaces the running engine.')]),
+    text('Your private AI workspace', { detail: 'PAIN runs models on this computer and serves them locally.' }),
+    section('1 · Choose a backend', [text('Use the Engine backend selector. Start applies the selected backend; Restart replaces the running engine.')]),
     section('2 · Choose a model', [text('Open Models to download a supported model, resume a partial download, or use a model already on disk.'), row([actionButton(ui, 'Models', 'models')])]),
-    section('3 · Start local inference', [text('Return to the dashboard and press Start. Inference, memory, and APU readings update while the panel is open.')]),
-    section('Keyboard', [text('H/L or arrows choose a backend or action. J/K moves between rows. Enter activates. S start · D stop · M monitor · G logs · R refresh.')]),
+    section('3 · Start local inference', [text('Return to the dashboard and press Start. Inference, memory, and hardware readings update while the panel is open.')]),
+    section('Keyboard', [text('Tab moves between controls. Enter activates. S start · D stop · G logs · R refresh. Escape returns to the dashboard.')]),
     text('Removal requires a stopped engine and a separate confirmation in Models.', { tone: 'muted' }),
   ]);
 }

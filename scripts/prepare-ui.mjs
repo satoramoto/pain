@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync, readlinkSync, symlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync, readlinkSync, unlinkSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
@@ -9,7 +9,7 @@ const archive = pkg.devDependencies['@satoramoto/zen'];
 const revision = archive.match(/\/([a-f0-9]{40})\.tar\.gz$/)?.[1];
 if (!revision) throw new Error('PAIN requires a full-SHA Zen dependency.');
 const require = createRequire(new URL('desktop/package.json', root));
-const files = ['ui.mjs', 'ui.d.mts', 'layout.mjs', 'layout.d.mts', 'theme.mjs', 'theme.d.mts', 'Tree.qml', 'Theme.qml'];
+const files = ['ui.mjs', 'ui.d.mts', 'layout.mjs', 'layout.d.mts', 'theme.mjs', 'theme.d.mts', 'Tree.qml', 'Theme.qml', 'application.mjs', 'application.d.mts', 'Application.qml', 'ApplicationTree.qml'];
 mkdirSync(target, { recursive: true });
 
 // Use the installed, locked dependency for desktop builds. Native-only installs
@@ -37,13 +37,17 @@ writeFileSync(provenance, JSON.stringify({ revision, archive, files }, null, 2) 
 const helpers = readFileSync(new URL('integrations/omarchy/pain/Model.js', root), 'utf8')
   .replace(/^\.pragma library\s*$/m, '').replace(/^function /gm, 'export function ');
 writeFileSync(new URL('model.mjs', target), '// Generated from Model.js. Do not edit.\n' + helpers);
-const kitLink = new URL('integrations/omarchy/pain/.generated', root);
-const relativeKit = '../../../.build/pain-ui';
+// Omarchy validates plugin contents and rejects symlinks inside a plugin.
+// Migrate only the known legacy link; never replace unrelated files.
+const pluginKit = new URL('integrations/omarchy/pain/.generated/', root);
 try {
-  if (!lstatSync(kitLink).isSymbolicLink() || readlinkSync(kitLink) !== relativeKit)
-    throw new Error('Refusing to replace integrations/omarchy/pain/.generated');
-} catch (error) {
-  if (error.code !== 'ENOENT') throw error;
-  symlinkSync(relativeKit, kitLink, 'dir');
-}
+  const entry = lstatSync(new URL('integrations/omarchy/pain/.generated', root));
+  if (entry.isSymbolicLink()) {
+    const link = new URL('integrations/omarchy/pain/.generated', root);
+    if (readlinkSync(link) !== '../../../.build/pain-ui') throw new Error('Unexpected generated kit symlink');
+    unlinkSync(link);
+  } else if (!entry.isDirectory()) throw new Error('Generated kit must be a directory');
+} catch (error) { if (error.code !== 'ENOENT') throw error; }
+mkdirSync(pluginKit, { recursive: true });
+for (const name of files.concat('model.mjs')) writeFileSync(new URL(name, pluginKit), readFileSync(new URL(name, target)));
 mkdirSync(new URL('desktop/public/omarchy/', root), { recursive: true });

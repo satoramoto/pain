@@ -8,7 +8,7 @@ export default {
   viteFinal: (config: UserConfig) => mergeConfig(config, {
     // The pinned archive ships source, and zen-stories replaces Vite's
     // export conditions. Resolve these source-only entries explicitly.
-    resolve: { alias: [
+    resolve: { dedupe: ['react', 'react-dom'], alias: [
       { find: /^@satoramoto\/zen\/view\/react$/, replacement: fileURLToPath(new URL('../node_modules/@satoramoto/zen/src/library/view-react.ts', import.meta.url)) },
       { find: /^@satoramoto\/zen\/view$/, replacement: fileURLToPath(new URL('../node_modules/@satoramoto/zen/src/library/view.ts', import.meta.url)) },
     ] },

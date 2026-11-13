@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ class DesktopTests(unittest.TestCase):
         ports = []
         ai = {'config': lambda: {'PAIN_PORT': '12345'},
               'backend': lambda: 'rocm', 'BACKENDS': ('rocm', 'vulkan'),
+              'comfy_backend': SimpleNamespace(inventory=lambda: [], BACKENDS=()), 'LLM_BACKENDS': ('rocm', 'vulkan'), 'models_dir': lambda: Path('/models'),
               'model_catalog': lambda: [{'id': 'local-test', 'ready': True}]}
         top = {'fetch_server_stats': lambda port: ports.append(port) or {'online': False},
                'get_system_mem': lambda: {}, 'get_hwmon': lambda: {}}
@@ -42,6 +44,7 @@ class DesktopTests(unittest.TestCase):
     def test_status_includes_memory_split_and_swap(self):
         calls = []
         ai = {'config': lambda: {}, 'backend': lambda: 'llamacpp-vulkan', 'BACKENDS': ('llamacpp-vulkan',),
+              'comfy_backend': SimpleNamespace(inventory=lambda: [], BACKENDS=()), 'LLM_BACKENDS': ('rocm', 'vulkan'), 'models_dir': lambda: Path('/models'),
               'model_catalog': lambda: []}
         top = {'fetch_server_stats': lambda port: {'online': True, 'model_alias': 'Muse-Glimmer-30B-Q4_K_XL', 'slots': []},
                'get_system_mem': lambda: {'total_gib': 58.5, 'used_gib': 40.2},

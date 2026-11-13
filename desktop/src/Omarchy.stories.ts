@@ -4,8 +4,8 @@ import { scenario } from 'story-spec';
 export default {title:'Tray/Omarchy',tags:['browser'],parameters:{spec:{capability:'desktop-tray',requirement:'Inspect the native renderer',shall:'The story catalog SHALL show the real QML panel for the shared engine states.'}}};
 const render = (name:string) => () => {
   const figure=document.createElement('figure'); const img=document.createElement('img');
-  img.src=`/omarchy/${name}.png`;img.alt=`Omarchy ${name} panel`;img.style.width='440px';
-  const caption=document.createElement('figcaption');caption.textContent='Reference capture from the previous native panel. Regenerate with scripts/render-omarchy.py on Omarchy to inspect the shared Panel.mjs renderer. Window placement and IPC require native QA.';
+  img.src=`/omarchy/${name}.png`;img.alt=`Omarchy ${name} panel`;img.style.width='460px';
+  const caption=document.createElement('figcaption');caption.textContent='Native capture of the shared App.mjs view through Zen’s QML renderer. Regenerate with scripts/render-omarchy.py on Omarchy. Window placement and IPC require native QA.';
   figure.append(img,caption);return domStory(figure);
 };
 function story(name:string) {return scenario({when:`The native tray is ${name}`,then:'The matching QML capture is available',check:async ({canvasElement})=>{const img=within(canvasElement).getByRole('img') as HTMLImageElement;await img.decode();await expect(img.naturalWidth).toBeGreaterThan(0);}},{render:render(name)});}

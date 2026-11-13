@@ -117,7 +117,10 @@ Repeat on an NVIDIA machine with Container Toolkit. Live GPU acceptance requires
 Docker daemon permission and locally available model weights; report it separately
 from the automated checks.
 
-This change starts from `main`, which has no desktop picker or OpenSpec directory.
-The concurrent Mac/desktop branch is not edited. When that branch incorporates
-this backend, its picker must use the same Linux-only availability rule and
-ComfyUI-specific status API rather than treating ComfyUI as an LLM.
+The Linux panel uses the shared Mac-style Zen application view. Its **Engine
+backend** selector offers `comfyui-rocm` for detected AMD GPUs and `comfyui-cuda`
+for detected NVIDIA GPUs. **Start** applies the selection and replaces the
+running engine. ComfyUI readiness comes from its own API; the dashboard displays
+its endpoint, while **Logs** reads a finite container log snapshot. Image models
+and workflows remain managed by ComfyUI. macOS does not show these container
+choices.

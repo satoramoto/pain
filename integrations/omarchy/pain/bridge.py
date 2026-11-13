@@ -48,8 +48,17 @@ def snapshot():
     memory = top['get_system_mem']()
     hardware = top['get_hwmon']()
     backend = ai['backend']()
-    snap = dict(server, backend=backend, backends=list(ai['BACKENDS']),
-                endpoint=f'http://127.0.0.1:{port}', memory=memory, hardware=hardware)
+    comfy = ai['comfy_backend']
+    vendors = {gpu['vendor'] for gpu in comfy.inventory()}
+    backends = [name for name in ai['LLM_BACKENDS'] if name != 'llamacpp-metal'] + [name for name, vendor in [('comfyui-rocm', 'amd'), ('comfyui-cuda', 'nvidia')] if vendor in vendors]
+    if backend in comfy.BACKENDS:
+        try:
+            comfy.validate_stats(comfy.api(ai['config']()))
+            server = {'online': True, 'engine': 'ComfyUI'}
+        except Exception:
+            server = {'online': False, 'engine': 'ComfyUI'}
+    snap = dict(server, backend=backend, backends=backends, modelsDir=str(ai['models_dir']()), telemetry_scope='linux-host',
+                endpoint=comfy.url(ai['config']()) if backend in comfy.BACKENDS else f'http://127.0.0.1:{port}', memory=memory, hardware=hardware)
     snap['models'] = ai['model_catalog']()
     snap['swap'] = top['get_swap_info']() if 'get_swap_info' in top else {}
     inference = summarize_inference(server)
@@ -84,23 +93,34 @@ def action(command, backend=None, escalate='sudo'):
         raise ValueError('Choose a supported backend')
     if command in ('pull', 'use', 'remove') and backend not in ai['presets']():
         raise ValueError('Choose a known model preset')
+    if command == 'download' and (not backend or not backend.startswith('https://')):
+        raise ValueError('Use an HTTPS GGUF download URL.')
+    folder = None
+    if command == 'folder':
+        folder = Path(backend or '').expanduser().resolve()
+        if not folder.is_relative_to(Path.home().resolve()) or any(c in str(folder) for c in '\n\r\"\''):
+            raise ValueError('Choose a folder inside your home folder.')
     # Serialize model changes and starts/stops across desktop surfaces.
     lock_path = ROOT / '.state' / 'desktop.lock'
     lock_path.parent.mkdir(exist_ok=True)
     with lock_path.open('a') as lock:
-        if command in ('up', 'down', 'pull', 'use', 'remove'):
+        if command in ('up', 'down', 'pull', 'use', 'remove', 'download', 'folder'):
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise ValueError('A PAIN desktop operation is already in progress.')
-        args = [str(ROOT / 'ai'), command]
+        args = [str(ROOT / 'ai'), 'add-model' if command == 'download' else 'down' if command == 'folder' else command]
+        if command == 'logs':
+            args.append('--once')
+        if command == 'download':
+            args.append(backend)
         if command in ('up', 'pull', 'use', 'remove'):
             args.append(backend)
         if command == 'remove':
             # Desktop callers show the confirmation before invoking the bridge.
             args.append('--yes')
         prefix = []
-        if command not in ('top', 'pull', 'remove'):
+        if command not in ('top', 'pull', 'remove', 'download'):
             runtime = ai['runtime']()
             probe = subprocess.run([runtime, 'info'], stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, timeout=10)
@@ -109,6 +129,16 @@ def action(command, backend=None, escalate='sudo'):
             if probe.returncode:
                 prefix = [escalate]
         result = subprocess.run(prefix + args, cwd=ROOT).returncode
+        if result == 0 and command == 'folder':
+            folder.mkdir(parents=True, exist_ok=True)
+            env_file = ROOT / '.env'
+            lines = env_file.read_text().splitlines() if env_file.exists() else []
+            lines = [line for line in lines if line.split('=', 1)[0].strip() != 'PAIN_MODELS_DIR']
+            lines.append(f'PAIN_MODELS_DIR={folder}')
+            temporary = env_file.with_suffix('.env.tmp')
+            temporary.touch(mode=0o600, exist_ok=True)
+            temporary.write_text('\n'.join(lines) + '\n')
+            temporary.replace(env_file)
         if result == 0 and command == 'use':
             result = subprocess.run(prefix + [str(ROOT / 'ai'), 'up', ai['backend']()], cwd=ROOT).returncode
         return result
@@ -116,7 +146,7 @@ def action(command, backend=None, escalate='sudo'):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['status', 'up', 'down', 'logs', 'top', 'pull', 'use', 'remove'])
+    parser.add_argument('command', choices=['status', 'up', 'down', 'logs', 'top', 'pull', 'use', 'remove', 'download', 'folder'])
     parser.add_argument('backend', nargs='?')
     args = parser.parse_args()
     if args.command == 'status':
@@ -142,7 +172,7 @@ def main():
                 input('\nPress Enter to close…')
             except (EOFError, KeyboardInterrupt):
                 pass
-    elif args.command in ('up', 'down', 'pull', 'use', 'remove'):
+    elif args.command in ('up', 'down', 'pull', 'use', 'remove', 'download', 'folder'):
         target = args.backend or 'engine'
         title = 'PAIN models' if args.command in ('pull', 'use', 'remove') else 'PAIN engine'
         if result:
@@ -150,6 +180,7 @@ def main():
         else:
             message = {'up': f'{target} started', 'down': 'Engine stopped',
                        'pull': f'{target} downloaded', 'use': f'{target} selected; engine started',
+                       'download': 'Model downloaded', 'folder': 'Models folder changed',
                        'remove': f'{target} local files removed'}[args.command]
             notify(title, message)
     return result

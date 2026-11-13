@@ -42,7 +42,7 @@ are external persistent data, never part of the app bundle.
 
 The **Dashboard** and **Models** tabs share a pinned, aligned action toolbar.
 Mac uses Visual Flow's Zen theme, separated glass section surfaces and native
-macOS HUD-window vibrancy. The native Omarchy plugin retains its own styling.
+macOS HUD-window vibrancy. Linux renders the same view through Zen’s QML application binding.
 
 The separate **Models** view shows supported presets, download sizes and local
 availability. Use **Download** or **Resume** to fetch a preset and **Use** to
@@ -161,19 +161,17 @@ Sources: [llama.cpp VirtGPU](https://github.com/ggml-org/llama.cpp/blob/master/d
 
 ## UI stories and checks
 
-The original `integrations/omarchy/pain/Widget.qml` is the dashboard reference:
-hero, telemetry rows, filled and stacked meters, backend chips, actions and
-keyboard navigation. The Mac dashboard uses Zen's full view-tree renderer to
-follow that anatomy, and shares status formatting with the native panel. Zen's
-portable Omarchy kit currently lacks the original
-hero, meter and stacked-bar primitives, so those rich native components are
-preserved rather than flattened into the kit's generic controls.
+The Mac design is the reference. `integrations/omarchy/pain/App.mjs` defines
+one application tree for the toolbar, tabs, dashboard, model manager, forms and
+logs. `AppState.mjs` owns navigation and action guards. Zen supplies the generic
+browser and QML application renderers, including heroes, surfaces and meters.
+`Widget.qml` and `desktop/src/panel.tsx` are hosts; neither defines a dashboard.
 
-The model manager is a separate shared Zen view. Guided setup, model-folder
-selection and downloads by URL stay outside the compact dashboard. Platform
-adapters supply status and execute actions. Mac hardware readings come from
-Mach, sysctl and IOKit; unsupported sensors are identified explicitly. Catalog
-memory capacity is separate from the live memory readings.
+Guided setup, model-folder selection and URL downloads stay outside the compact
+dashboard. Platform adapters supply status and execute effects. The Linux host
+adds its available backend choices through the shared view’s capability input.
+Mac hardware readings come from Mach, sysctl and IOKit; unsupported sensors are
+identified explicitly. Catalog capacity is separate from live memory readings.
 
 `desktop/` contains the Tauri host and Storybook. Both renderer catalogs consume
 shared JSON fixtures. Tauri stories are interactive; Omarchy stories show native
