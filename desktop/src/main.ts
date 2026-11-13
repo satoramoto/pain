@@ -1,3 +1,6 @@
+import { check, type Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { updates, type UpdateState } from './updates';
 import { listen } from '@tauri-apps/api/event';
 import { initialSetup, onboarding, runSetup, type Framework } from './onboarding';
 import { invoke } from '@tauri-apps/api/core';
@@ -14,10 +17,56 @@ let decoded = 0;
 let model = '';
 let setup = initialSetup();
 let showSetup = false;
+let showUpdates = false;
+let updateState: UpdateState = {phase:'checking'};
+let pendingUpdate: Update | null = null;
+let updateBusy = false;
+async function checkUpdates() {
+  showUpdates = true;
+  if (updateBusy || updateState.phase === 'restart') {render();return;}
+  updateBusy = true; updateState = {phase:'checking'}; render();
+  try {
+    await pendingUpdate?.close(); pendingUpdate = null;
+    if (!await invoke<boolean>('updates_configured')) {
+      updateState = {phase:'error',error:'This build has no updater verification key. Install an update-enabled signed release to use app updates.'};
+      return;
+    }
+    pendingUpdate = await check({timeout:30000});
+    updateState = pendingUpdate ? {phase:'available',version:pendingUpdate.version,notes:pendingUpdate.body} : {phase:'current'};
+  } catch (error) {updateState = {phase:'error',error:`${String(error)} Check your connection and try again. Updates become available after the first stable release.`};}
+  finally {updateBusy = false;render();}
+}
+async function installUpdate() {
+  if (updateBusy) return;
+  if (busy) {updateState.error = 'Wait for the current PAIN operation to finish before restarting.';render();return;}
+  updateBusy = true;
+  try {
+    if (updateState.phase !== 'restart') {
+      if (!pendingUpdate) return;
+      updateState = {...updateState,phase:'downloading',received:0};render();
+      await pendingUpdate.download(event => {
+        if (event.event === 'Started') updateState.total = event.data.contentLength;
+        if (event.event === 'Progress') updateState.received = (updateState.received || 0) + event.data.chunkLength;
+        render();
+      }, {timeout:300000});
+      updateState.phase = 'installing';render();
+      await pendingUpdate.install();
+      updateState.phase = 'restart';render();
+    }
+    await relaunch();
+  } catch (error) {
+    updateState = {...updateState,phase:updateState.phase === 'restart' ? 'restart' : 'error',error:String(error)};
+  } finally {updateBusy = false;render();}
+}
 let firstSnapshot = true;
 const root = document.querySelector<HTMLElement>('#app')!;
 const app = createRoot(root);
 function render() {
+  if (showUpdates) {
+    const screen = updates(updateState, () => {void installUpdate();}, () => {void checkUpdates();}, () => {showUpdates=false;render();});
+    app.render(h(ThemeFrame, {children:h('div', {ref:(element:HTMLDivElement|null)=>{element?.replaceChildren(screen);}})}));
+    return;
+  }
   if (showSetup) {
     const screen = onboarding(setup, () => {
       if (busy) return;
@@ -92,10 +141,11 @@ async function action(command: Action, value?: string) {
   } catch (error) { controlError = String(error); status.error = controlError; status.busy = ''; status.fetching = ''; await loadModels(); render(); }
   finally { busy = false; }
 }
-void listen('getting-started', () => {showSetup = true;render();});
+void listen('getting-started', () => {if(updateBusy)return;showUpdates=false;showSetup = true;render();});
+void listen('check-updates', () => {void checkUpdates();});
 render(); void refresh(); setInterval(() => {
   // Leave a partially edited folder path alone while a poll is in flight.
   if (document.activeElement instanceof HTMLInputElement) return;
-  if (!busy && !showSetup) void refresh();
+  if (!busy && !showSetup && !showUpdates) void refresh();
   else if (status.fetching) void loadModels().then(render);
 }, 5000);

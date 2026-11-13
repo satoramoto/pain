@@ -262,10 +262,56 @@ both app and image with Gatekeeper. Credentials are removed in an `always()` ste
 Pushes use signing once all five secrets are set. With no secrets, artifacts
 are explicitly named `*-unsigned`; partially configured signing fails. Manual
 Mac QA runs default to requiring signing, so missing secrets fail instead of
-silently producing unsigned software. No Tauri updater key is needed: this
-workflow distributes the DMG, without an automatic updater.
+silently producing unsigned software. QA builds also create signed updater
+archives when the updater secret is configured; they do not publish releases.
 
 After copying the secrets, rerun the latest Mac QA run on `fix/mac-virtgpu`.
 Once this workflow is on the default branch, manual dispatch is also available
 with `signed=true`.
-The signed path still needs its first successful remote run with your credentials.
+The signed app, runtime and DMG passed remote signing, notarization and Gatekeeper
+verification in run `43369465341`. Installation and inference still need Mac QA.
+
+
+## App updates
+
+Open **Help → Check for Updates…**, or right-click the brain in the menu bar
+and choose **Check for Updates…**. PAIN checks the latest stable release on
+`satoramoto/pain`. Select **Install and restart** to download, verify and install
+it. No download or restart happens before that selection. Run PAIN from
+`/Applications`, not directly from a mounted DMG.
+
+The updater uses Tauri signature verification in addition to Apple's code
+signing. Configure `TAURI_SIGNING_PRIVATE_KEY` and, for an encrypted key,
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in GitHub Actions secrets. The matching
+public key goes in the `TAURI_UPDATER_PUBLIC_KEY` GitHub Actions repository
+variable. CI embeds it into the app through a Tauri config override. Local builds
+without this override cannot verify or install updates; supply the same override
+to test updates locally. Private keys never belong in the repository. Keep this key for future releases: changing only the public
+key prevents existing installations from accepting updates.
+
+To publish after Mac QA:
+
+1. Bump the stable `X.Y.Z` version in `desktop/src-tauri/tauri.conf.json`,
+   `desktop/src-tauri/Cargo.toml`, `desktop/package.json` and their lockfiles.
+2. Commit and push the tested code, then tag that commit `vX.Y.Z` and push the tag.
+3. Mac QA validates the tag/version match, requires both Apple signing and updater
+   signing, and builds the app and DMG. It uploads the signed `.app.tar.gz`,
+   `.sig`, `latest.json` and DMG to a draft GitHub release before publishing it.
+   A failed upload leaves a draft; remove that draft before rerunning publication.
+
+The feed is `https://github.com/satoramoto/pain/releases/latest/download/latest.json`.
+Only `darwin-aarch64` is shipped. Before the first stable release, checking shows
+an error with retry; QA workflow artifacts are not an update feed. A newer version
+is required to offer an update, so rebuilding `0.1.0` does not update `0.1.0` users.
+
+The app restarts independently of inference. Models, settings and VM data remain
+in the user data directory. Bundled controller files refresh at launch; a changed
+APIR runtime is installed by Getting Started after the dedicated VM is stopped.
+App updates do not replace a running VM runtime; follow the runtime upgrade steps
+above when a release changes APIR or llama.cpp.
+
+For Mac QA, install the older signed app in Applications, publish a newer tested
+version, check for updates, and install it. Verify the version changed, the app
+reopens from the tray, and models/configuration survive. Also check offline/retry
+and a failed download. CI verifies packaging; it cannot prove an installed Mac
+can replace and restart its own app.

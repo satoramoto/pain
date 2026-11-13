@@ -14,13 +14,15 @@ class DesktopTests(unittest.TestCase):
     def test_status_uses_configured_port_and_saved_backend(self):
         ports = []
         ai = {'config': lambda: {'PAIN_PORT': '12345'},
-              'backend': lambda: 'rocm', 'BACKENDS': ('rocm', 'vulkan')}
+              'backend': lambda: 'rocm', 'BACKENDS': ('rocm', 'vulkan'),
+              'model_catalog': lambda: [{'id': 'local-test', 'ready': True}]}
         top = {'fetch_server_stats': lambda port: ports.append(port) or {'online': False},
                'get_system_mem': lambda: {}, 'get_hwmon': lambda: {}}
         with patch.object(desktop.runpy, 'run_path', side_effect=[ai, top]):
             result = desktop.snapshot()
         self.assertEqual(ports, [12345])
         self.assertEqual(result['backend'], 'rocm')
+        self.assertEqual(result['models'], [{'id': 'local-test', 'ready': True}])
         self.assertEqual(result['endpoint'], 'http://127.0.0.1:12345')
 
     def test_summarize_inference_prefers_busy_slot(self):
@@ -39,7 +41,8 @@ class DesktopTests(unittest.TestCase):
 
     def test_status_includes_memory_split_and_swap(self):
         calls = []
-        ai = {'config': lambda: {}, 'backend': lambda: 'llamacpp-vulkan', 'BACKENDS': ('llamacpp-vulkan',)}
+        ai = {'config': lambda: {}, 'backend': lambda: 'llamacpp-vulkan', 'BACKENDS': ('llamacpp-vulkan',),
+              'model_catalog': lambda: []}
         top = {'fetch_server_stats': lambda port: {'online': True, 'model_alias': 'Muse-Glimmer-30B-Q4_K_XL', 'slots': []},
                'get_system_mem': lambda: {'total_gib': 58.5, 'used_gib': 40.2},
                'get_hwmon': lambda: {'gtt_used_gib': 20.4, 'gtt_total_gib': 44.0},
