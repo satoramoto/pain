@@ -52,7 +52,7 @@ function Panel({ status, action, logs }: { status: Status; action: Act; logs: Lo
   const urlForm = useRef<HTMLFormElement>(null), folderForm = useRef<HTMLFormElement>(null);
   const state = panelState(status, { platform: 'mac' });
   useEffect(() => setFolder(status.modelsDir || ''), [status.modelsDir]);
-  useEffect(() => { content.current?.scrollTo(0, 0); setCursor(null); }, [screen]);
+  useEffect(() => { if (content.current) content.current.scrollTop = 0; setCursor(null); }, [screen]);
   useEffect(() => { root.current?.querySelector('[data-cursor="true"]')?.scrollIntoView({ block: 'nearest' }); }, [cursor]);
   useEffect(() => {
     if (removeId && !status.models?.some(model => model.id === removeId)) setRemoveId('');
