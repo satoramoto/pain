@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import platform
 import pwd
+import shutil
 import urllib.request
 
 BACKENDS = ('comfyui-rocm', 'comfyui-cuda')
@@ -75,6 +76,10 @@ def environment(cfg):
     data = Path(cfg.get('PAIN_COMFYUI_DATA_DIR', home / '.local/share/pain/comfyui')).expanduser()
     if not data.is_absolute():
         raise ValueError('PAIN_COMFYUI_DATA_DIR must be an absolute path.')
+    models = Path(cfg.get('PAIN_COMFYUI_MODELS_DIR', home / 'Models/comfyui')).expanduser()
+    if not models.is_absolute():
+        raise ValueError('PAIN_COMFYUI_MODELS_DIR must be an absolute path.')
+    env['PAIN_COMFYUI_MODELS_DIR'] = str(models)
     env['PAIN_COMFYUI_DATA_DIR'] = str(data)
     env['PAIN_COMFYUI_UID'] = cfg.get('PAIN_COMFYUI_UID', cfg.get('SUDO_UID', str(os.getuid())))
     env['PAIN_COMFYUI_GID'] = cfg.get('PAIN_COMFYUI_GID', cfg.get('SUDO_GID', str(os.getgid())))
@@ -112,3 +117,40 @@ def probe_code(selected):
         'assert (x@x)[0,0].item()==32; '
         'print("GPU probe passed:",torch.cuda.get_device_name(0))'
     )
+
+
+def prepare_workspace(cfg, migrate=True):
+    """Move the old model tree without overwriting weights in the new mount."""
+    env = environment(cfg)
+    target = Path(env['PAIN_COMFYUI_MODELS_DIR'])
+    source = Path(env['PAIN_COMFYUI_DATA_DIR']) / 'models'
+    created = []
+    parent = target
+    while not parent.exists():
+        created.append(parent)
+        parent = parent.parent
+    if source.resolve() != target.resolve() and (source.resolve().is_relative_to(target.resolve()) or target.resolve().is_relative_to(source.resolve())):
+        raise ValueError('The old and new model folders must not be nested inside each other.')
+    if migrate and source.resolve() != target.resolve() and source.exists():
+        entries = list(source.rglob('*'))
+        for old in entries:
+            new = target / old.relative_to(source)
+            if old.is_symlink() or (new.exists() and not (old.is_dir() and new.is_dir())):
+                raise ValueError(f'Model migration needs attention: {old} -> {new}. No files were moved.')
+        target.mkdir(parents=True, exist_ok=True)
+        for old in sorted(entries, key=lambda p: len(p.parts)):
+            new = target / old.relative_to(source)
+            if old.is_dir():
+                new.mkdir(parents=True, exist_ok=True)
+            else:
+                shutil.move(str(old), str(new))
+    else:
+        target.mkdir(parents=True, exist_ok=True)
+    if os.geteuid() == 0:
+        uid, gid = int(env['PAIN_COMFYUI_UID']), int(env['PAIN_COMFYUI_GID'])
+        for folder in [target, *created]:
+            os.chown(folder, uid, gid)
+        for folder in target.rglob('*'):
+            if folder.is_dir():
+                os.chown(folder, uid, gid)
+    return env

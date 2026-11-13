@@ -218,6 +218,7 @@ def up_comfyui(name):
                          'Check the image, host driver and (NVIDIA) Container Toolkit. See docs/comfyui.md.') from exc
     finally:
         remove_probe(probe)
+    comfy_backend.prepare_workspace(cfg)
     compose('up', '-d', '--remove-orphans', 'engine', selected=name)
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(name + '\n')
@@ -233,7 +234,8 @@ def up_comfyui(name):
             continue
         comfy_backend.validate_stats(stats)
         print(f'pain(less) ready: {name}. Open {comfy_backend.url(cfg)}')
-        print('Models, workflows and images persist in ' + comfy_backend.environment(cfg)['PAIN_COMFYUI_DATA_DIR'])
+        print('Models: ' + comfy_backend.environment(cfg)['PAIN_COMFYUI_MODELS_DIR'])
+        print('Workflows and images: ' + comfy_backend.environment(cfg)['PAIN_COMFYUI_DATA_DIR'])
         return
     raise ValueError('ComfyUI not ready after 180 seconds. Inspect ./ai logs; ./ai down stops it.')
 

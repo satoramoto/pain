@@ -28,7 +28,7 @@ function dashboard(status, presentation) {
     hardware.thermals !== 'Unavailable' ? pair('Thermals', hardware.thermals) : null,
   ].filter(Boolean);
   return column([
-    status.engine === 'ComfyUI' ? surface('Image generation', [text(presentation.online ? 'ComfyUI is ready.' : 'ComfyUI is offline.'), text(status.endpoint || '', { tone: 'muted' }), text('Image models and workflows are managed in ComfyUI.', { tone: 'muted' })]) : presentation.online ? surface('Inference', [
+    status.engine === 'ComfyUI' ? surface('Image generation', [text(presentation.online ? 'ComfyUI is ready.' : 'ComfyUI is offline.'), element('link', {label:status.endpoint || '', href:status.endpoint || ''}), text('Image models and workflows are managed in ComfyUI.', { tone: 'muted' })]) : presentation.online ? surface('Inference', [
       pair('Model', model ? model.title : data.model), pair('Prompt', data.prompt),
       pair('Draft', data.draft), pair('Speed', data.speed),
       meter('Context', data.context, data.fraction, 'normal', presentation.generating),
@@ -48,7 +48,7 @@ function dashboard(status, presentation) {
 function models(status, ui) {
   if (status.engine === 'ComfyUI') return surface('Image models', [
     text('ComfyUI manages its image models and workflows.'),
-    text(status.endpoint || '', { tone: 'muted' }),
+    element('link', {label:status.endpoint || '', href:status.endpoint || ''}),
     text('Choose an LLM backend and start it to manage GGUF models here.', { tone: 'muted' }),
   ]);
   const busy = !!status.busy;
