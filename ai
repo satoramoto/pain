@@ -75,7 +75,7 @@ def compose(*args, selected=None, capture=False, timeout=None):
     env['PAIN_BACKEND'] = selected
     env['PAIN_MODELS_DIR'] = str(models_dir())
     base = 'compose.comfyui.yaml' if selected in comfy_backend.BACKENDS else 'compose.yaml'
-    command = [runtime(), 'compose', '--project-directory', str(ROOT),
+    command = [runtime(), 'compose',
                '-f', str(ROOT / base),
                '-f', str(ROOT / 'backends' / f'{selected}.yaml'), *args]
     return subprocess.run(command, cwd=ROOT, env=env, check=True, text=True,
