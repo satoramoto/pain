@@ -204,6 +204,7 @@ def up(name, device=None):
 def up_comfyui(name):
     cfg = config()
     comfy_backend.check_host(name, cfg)
+    comfy_backend.prepare_workspace(cfg, migrate=False)
     print(f'[pain(less)] Selected {name}: {comfy_backend.url(cfg)}', flush=True)
     compose('config', '-q', selected=name)
     compose('pull', 'engine', selected=name)

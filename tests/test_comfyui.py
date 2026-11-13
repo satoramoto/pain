@@ -216,6 +216,16 @@ class LifecycleTest(unittest.TestCase):
 
 
 class WorkspaceTest(unittest.TestCase):
+    def test_preflight_preparation_creates_target_without_moving_models(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); old=root/'state/models/vae'; old.mkdir(parents=True)
+            (old/'model.safetensors').write_bytes(b'weights')
+            cfg={'PAIN_COMFYUI_DATA_DIR':str(root/'state'),'PAIN_COMFYUI_MODELS_DIR':str(root/'models')}
+            comfy.prepare_workspace(cfg,migrate=False)
+            self.assertTrue((root/'models').is_dir())
+            self.assertTrue((old/'model.safetensors').exists())
+
+
     def test_preserves_old_weights_and_refuses_conflicts_before_moving(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); old=root/'state/models/vae'; old.mkdir(parents=True)
