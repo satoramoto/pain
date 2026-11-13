@@ -2,6 +2,7 @@
 import { element, column, row, text, button, control } from './.generated/application.mjs';
 import { panelState, known, clamp01 } from './.generated/model.mjs';
 import { view as modelManager, guide } from './Panel.mjs';
+import { themes } from './Appearance.mjs';
 import { tabs } from './AppState.mjs';
 
 const surface = (label, children, props = {}) => element('surface', Object.assign({ label }, props), children);
@@ -101,6 +102,7 @@ export function appView(status, ui, logs = { state: 'idle', content: '' }, capab
       element('tabs', { label: 'PAIN', options: tabs.map(tab => ({ label: tab.label, value: tab.id })), value: ui.screen === 'guide' ? 'dashboard' : ui.screen, action: 'navigate', grow: true }),
       action('Getting Started', capabilities.guide ? 'guide' : 'getting-started', { variant: 'quiet' }),
     ]),
+    control('select', 'Theme', ui.theme || 'platform', 'select-theme', {options:themes}),
     capabilities.backendSelection ? control('select', 'Engine backend', ui.backend || status.backend, 'select-backend', { options: (status.backends || []).map(value => ({ label: value, value })), disabled: !!status.busy }) : null,
     row(state.actions.map(item => action(item.label, item.key, {
       disabled: item.key !== 'logs' && !item.enabled,

@@ -1,6 +1,8 @@
 # PAIN development
 
-The Mac view is the visual and interaction reference for every platform. Define
+The Mac view is the layout and interaction reference for every platform. Linux
+defaults to the live Omarchy style; macOS defaults to Visual Flow frost. Theme
+selection changes materials and controls without forking the shared layout. Define
 the entire interface once through Zen's portable view vocabulary: dashboard,
 navigation, model manager, logs, and controls. Both the browser and QML renderers
 consume that definition. Do not keep separate React and handwritten QML screens.

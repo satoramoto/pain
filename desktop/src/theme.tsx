@@ -1,9 +1,12 @@
+import { appearanceFor } from '../../integrations/omarchy/pain/Appearance.mjs';
 import type { ReactNode } from 'react';
-import { Surface, ThemeScope, resolveTheme } from './zen';
+import { Surface, ThemeScope } from './zen';
+
+import { resolveApplicationTheme } from '@satoramoto/zen/harness/omarchy/bench/application-theme.ts';
 
 // Same scope and transparent ground as visual[flow]'s app frame. The native
 // window supplies HUD frost; Zen owns the glass, type, contrast, and controls.
-const visuals = resolveTheme({ theme: 'visuals' });
+const visuals = resolveApplicationTheme('visuals');
 const layers = visuals.facets.materials.layers;
 const facets = {
   ...visuals.facets,
@@ -19,8 +22,13 @@ const facets = {
   },
 };
 
-export function ThemeFrame({ children }: { children: ReactNode }) {
-  return <ThemeScope facets={facets} principles={visuals.pack.principles} mode="system" bleed>
+export function ThemeFrame({ children, appearance }: { children: ReactNode; appearance?: string }) {
+  let selected = appearance;
+  if (!selected) {
+    try { selected = appearanceFor(localStorage.getItem('pain.appearance'), 'mac'); } catch { selected = 'visuals'; }
+  }
+  const chosen = resolveApplicationTheme(selected || 'visuals');
+  return <ThemeScope facets={selected === 'visuals' ? facets : chosen.facets} principles={chosen.pack.principles} mode="system" bleed>
     <Surface layer="ground" className="pain-window">{children}</Surface>
   </ThemeScope>;
 }
