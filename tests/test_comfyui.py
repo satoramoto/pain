@@ -88,6 +88,7 @@ class DetectionTest(unittest.TestCase):
         self.assertEqual(env['PAIN_COMFYUI_UID'], '1234')
         self.assertEqual(env['PAIN_COMFYUI_GID'], '2345')
         self.assertEqual(env['PAIN_COMFYUI_DATA_DIR'], '/home/alice/.local/share/pain/comfyui')
+        self.assertEqual(env['PAIN_COMFYUI_MODELS_DIR'], '/home/alice/Models/comfyui')
         with self.assertRaisesRegex(ValueError, 'absolute'):
             comfy.environment({'PAIN_COMFYUI_DATA_DIR': '../relative'})
         with self.assertRaises(ValueError):
@@ -106,6 +107,7 @@ class LifecycleTest(unittest.TestCase):
         for name, value in [('STATE', self.state), ('CONTAINER_STATE', self.root / 'container.json'),
                             ('RUNTIME_STATE', self.root / 'runtime')]:
             self.stack.enter_context(patch.object(pain, name, value))
+        self.stack.enter_context(patch.object(comfy, 'prepare_workspace'))
         self.stack.enter_context(patch.object(pain, 'config', return_value={
             'PAIN_COMFYUI_PORT': '8199', 'PAIN_MODELS_DIR': str(self.root / 'models')}))
         self.stack.enter_context(patch.object(comfy, 'check_host'))
@@ -211,6 +213,23 @@ class LifecycleTest(unittest.TestCase):
             self.assertIn(str(pain.ROOT / expected), args)
             self.assertEqual(run.call_args.kwargs['env']['PAIN_BACKEND'], selected)
 
+
+
+class WorkspaceTest(unittest.TestCase):
+    def test_preserves_old_weights_and_refuses_conflicts_before_moving(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); old=root/'state/models/vae'; old.mkdir(parents=True)
+            (old/'model.safetensors').write_bytes(b'weights')
+            cfg={'PAIN_COMFYUI_DATA_DIR':str(root/'state'),'PAIN_COMFYUI_MODELS_DIR':str(root/'models')}
+            comfy.prepare_workspace(cfg)
+            self.assertEqual((root/'models/vae/model.safetensors').read_bytes(),b'weights')
+            self.assertFalse((old/'model.safetensors').exists())
+            (old/'model.safetensors').write_bytes(b'other')
+            (old/'new.safetensors').write_bytes(b'new')
+            with self.assertRaisesRegex(ValueError,'No files were moved'):
+                comfy.prepare_workspace(cfg)
+            self.assertTrue((old/'new.safetensors').exists())
+            self.assertEqual((root/'models/vae/model.safetensors').read_bytes(),b'weights')
 
 class ApiTest(unittest.TestCase):
     def test_system_stats_over_http_on_separate_port(self):
