@@ -5,15 +5,12 @@ space for the models you choose. A model download can be several gigabytes.
 
 ## Install
 
-1. Download the **Apple Silicon DMG** from [Releases](https://github.com/satoramoto/pain/releases).
-   Choose a release marked signed and notarized.
+1. [Download pain(less) for Apple Silicon](https://github.com/satoramoto/pain/releases/download/v0.1.0/pain.less._0.1.0_aarch64.dmg).
+   This installer is Developer ID signed and Apple-notarized.
 2. Open the DMG and drag **pain(less)** into **Applications**.
 3. Open the app. **Getting Started** walks you through the local runtime,
    your first model, and connecting OpenCode. Keep the default choices unless
    you already use Docker Desktop.
-
-If there’s no signed release listed yet, don’t use a development build as a
-substitute. The download link will be added when signing is complete.
 
 ## Everyday use
 
