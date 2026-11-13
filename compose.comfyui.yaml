@@ -1,0 +1,23 @@
+name: pain
+
+services:
+  # Keep main's service identity so switching replaces the existing pain-engine.
+  ollama:
+    container_name: pain-engine
+    restart: "no"
+    init: true
+    ports:
+      - "127.0.0.1:${PAIN_COMFYUI_PORT:-8188}:8188"
+    volumes:
+      - "${PAIN_COMFYUI_DATA_DIR:?Use ./ai or set PAIN_COMFYUI_DATA_DIR}:/data"
+    environment:
+      PUID: "${PAIN_COMFYUI_UID:-1000}"
+      PGID: "${PAIN_COMFYUI_GID:-1000}"
+      COMFYUI_CPU: "false"
+      COMFYUI_PORT: "8188"
+      COMFYUI_BUNDLED_NODES: "none"
+      COMFYUI_ENABLE_MANAGER: "true"
+      COMFYUI_INSTALL_NODE_REQUIREMENTS: "true"
+      COMFYUI_ARGS: "${PAIN_COMFYUI_ARGS:-}"
+    labels:
+      ai.pain.backend: "${PAIN_BACKEND}"
