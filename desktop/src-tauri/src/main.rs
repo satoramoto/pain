@@ -9,9 +9,9 @@ use std::{
     time::Duration,
 };
 use tauri::{
-    menu::Menu,
+    menu::{Menu, MenuItem, HELP_SUBMENU_ID},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager,
+    Emitter, Manager,
 };
 struct Operations(Mutex<()>);
 
@@ -361,6 +361,13 @@ mod tests {
     }
 }
 #[tauri::command]
+fn updates_configured(app: tauri::AppHandle) -> bool {
+    app.config().plugins.0.get("updater")
+        .and_then(|config| config.get("pubkey"))
+        .and_then(Value::as_str)
+        .is_some_and(|key| !key.is_empty())
+}
+#[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     // The inference engine runs independently of this UI.
     app.exit(0);
@@ -388,20 +395,31 @@ fn show_popup(window: &tauri::WebviewWindow, rect: tauri::Rect) -> tauri::Result
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(Operations(Mutex::new(())))
         .manage(host_stats::Sampler::default())
-        .invoke_handler(tauri::generate_handler![control, snapshot, onboarding_step, models, quit_app])
+        .invoke_handler(tauri::generate_handler![control, snapshot, onboarding_step, models, quit_app, updates_configured])
         .setup(|app| {
             let directory = data(app.handle()).map_err(std::io::Error::other)?;
             refresh_payload(app.handle(), &directory.join("project"))
                 .map_err(std::io::Error::other)?;
-            app.set_menu(Menu::default(app.handle())?)?;
+            let menu = Menu::default(app.handle())?;
+            if let Some(help) = menu.get(HELP_SUBMENU_ID).and_then(|item| item.as_submenu().cloned()) {
+                help.append(&MenuItem::with_id(app, "getting-started", "Getting Started", true, None::<&str>)?)?;
+                help.append(&MenuItem::with_id(app, "check-updates", "Check for Updates…", true, None::<&str>)?)?;
+            }
+            app.set_menu(menu)?;
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             TrayIconBuilder::with_id("brain")
                 .icon(tauri::include_image!("./icons/tray-brain.png"))
                 .icon_as_template(true)
                 .tooltip("Private AI Network")
+                .menu(&Menu::with_items(app, &[
+                    &MenuItem::with_id(app, "getting-started", "Getting Started", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "check-updates", "Check for Updates…", true, None::<&str>)?,
+                ])?)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
@@ -416,6 +434,16 @@ fn main() {
                 })
                 .build(app)?;
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            let name = event.id().as_ref();
+            if name == "getting-started" || name == "check-updates" {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    let _ = window.emit(name, ());
+                }
+            }
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

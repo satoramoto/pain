@@ -1,0 +1,15 @@
+import { domStory } from './story-dom';
+import './style.css';
+import { expect, fn, userEvent, within } from 'storybook/test';
+import { scenario } from 'story-spec';
+import { updates, type UpdateState } from './updates';
+export default {title:'Help/Updates',parameters:{spec:{capability:'desktop-updates',requirement:'Install signed app updates',shall:'PAIN SHALL check stable releases, request installation explicitly, show progress and expose recoverable failures.'}}};
+const install = fn();
+const retry = fn();
+const view = (state: UpdateState) => domStory(updates(state,install,retry,fn()));
+export const Checking = scenario({when:'The user checks for updates',then:'The check is visible without an install action',check:async({canvasElement})=>{const c=within(canvasElement);await expect(c.getByRole('status')).toHaveTextContent('Checking');await expect(c.queryByRole('button',{name:'Install and restart'})).toBeNull();}},{render:()=>view({phase:'checking'})});
+export const Current = scenario({when:'The installed version is current',then:'PAIN reports that it is up to date',check:async({canvasElement})=>{await expect(within(canvasElement).getByRole('status')).toHaveTextContent('up to date');}},{render:()=>view({phase:'current'})});
+export const Available = scenario({when:'A newer stable release is found',then:'Installation requires the user to select Install and restart',check:async({canvasElement})=>{install.mockClear();const c=within(canvasElement);await expect(install).not.toHaveBeenCalled();await userEvent.click(c.getByRole('button',{name:'Install and restart'}));await expect(install).toHaveBeenCalledOnce();}},{render:()=>view({phase:'available',version:'0.2.0',notes:'Improvements to local inference.'})});
+export const Downloading = scenario({when:'An update is halfway downloaded',then:'Progress is visible and duplicate installation is unavailable',check:async({canvasElement})=>{const c=within(canvasElement);await expect(c.getByRole('status')).toHaveTextContent('50%');await expect(c.queryByRole('button',{name:'Install and restart'})).toBeNull();}},{render:()=>view({phase:'downloading',received:50,total:100})});
+export const Failed = scenario({when:'An update check fails',then:'The error is visible and the user can retry',check:async({canvasElement})=>{retry.mockClear();const c=within(canvasElement);await expect(c.getByRole('alert')).toHaveTextContent('Network unavailable');await userEvent.click(c.getByRole('button',{name:'Check again'}));await expect(retry).toHaveBeenCalledOnce();}},{render:()=>view({phase:'error',error:'Network unavailable'})});
+export const RestartFailed = scenario({when:'The update installed but relaunch failed',then:'PAIN offers another restart without reinstalling',check:async({canvasElement})=>{const c=within(canvasElement);await expect(c.getByRole('button',{name:'Restart PAIN'})).toBeEnabled();await expect(c.queryByRole('button',{name:'Install and restart'})).toBeNull();}},{render:()=>view({phase:'restart',error:'Please restart PAIN to finish.'})});
