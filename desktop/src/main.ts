@@ -74,6 +74,11 @@ async function loadLogs() {
   render();
 }
 async function action(command: Action, value?: string) {
+  if (command === 'quit') {
+    try { await invoke('quit_app'); }
+    catch (error) { controlError = String(error); status.error = controlError; render(); }
+    return;
+  }
   if (command === 'getting-started') { showSetup = true; render(); return; }
   if (command === 'logs') { await loadLogs(); return; }
   if (busy) return;

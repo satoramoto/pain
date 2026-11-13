@@ -9,9 +9,9 @@ use std::{
     time::Duration,
 };
 use tauri::{
-    menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
-    Emitter, Manager,
+    menu::Menu,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager,
 };
 struct Operations(Mutex<()>);
 
@@ -360,62 +360,59 @@ mod tests {
         );
     }
 }
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    // The inference engine runs independently of this UI.
+    app.exit(0);
+}
+
+fn show_popup(window: &tauri::WebviewWindow, rect: tauri::Rect) -> tauri::Result<()> {
+    let scale = window.scale_factor()?;
+    let tray_position = rect.position.to_physical::<f64>(scale);
+    let tray_size = rect.size.to_physical::<f64>(scale);
+    if let Some(monitor) = window.monitor_from_point(tray_position.x, tray_position.y)? {
+        let scale = monitor.scale_factor();
+        let area = monitor.work_area();
+        let width = (460.0 * scale).round().min(area.size.width as f64) as u32;
+        let height = (850.0 * scale).round().min(area.size.height as f64) as u32;
+        window.set_size(tauri::PhysicalSize::new(width, height))?;
+        let x = (tray_position.x + tray_size.width / 2.0 - width as f64 / 2.0)
+            .clamp(area.position.x as f64, area.position.x as f64 + (area.size.width - width) as f64);
+        let y = (tray_position.y + tray_size.height)
+            .clamp(area.position.y as f64, area.position.y as f64 + (area.size.height - height) as f64);
+        window.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32))?;
+    }
+    window.show()?;
+    window.set_focus()
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Operations(Mutex::new(())))
         .manage(host_stats::Sampler::default())
-        .invoke_handler(tauri::generate_handler![control, snapshot, onboarding_step, models])
+        .invoke_handler(tauri::generate_handler![control, snapshot, onboarding_step, models, quit_app])
         .setup(|app| {
             let directory = data(app.handle()).map_err(std::io::Error::other)?;
             refresh_payload(app.handle(), &directory.join("project"))
                 .map_err(std::io::Error::other)?;
-            let show = MenuItem::with_id(app, "show", "Open PAIN", true, None::<&str>)?;
-            let quit = MenuItem::with_id(
-                app,
-                "quit",
-                "Quit PAIN (keep inference running)",
-                true,
-                None::<&str>,
-            )?;
-            let getting_started = MenuItem::with_id(
-                app,
-                "getting-started",
-                "Getting Started",
-                true,
-                None::<&str>,
-            )?;
-            let app_menu = Menu::default(app.handle())?;
-            if let Some(help) = app_menu
-                .get(tauri::menu::HELP_SUBMENU_ID)
-                .and_then(|item| item.as_submenu().cloned())
-            {
-                help.append(&getting_started)?;
-            }
-            app.set_menu(app_menu)?;
-            app.on_menu_event(|app, event| {
-                if event.id.as_ref() == "getting-started" {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                        let _ = window.emit("getting-started", ());
-                    }
-                }
-            });
-            let menu = Menu::with_items(app, &[&show, &getting_started, &quit])?;
-            TrayIconBuilder::new()
+            app.set_menu(Menu::default(app.handle())?)?;
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            TrayIconBuilder::with_id("brain")
                 .icon(tauri::include_image!("./icons/tray-brain.png"))
                 .icon_as_template(true)
                 .tooltip("Private AI Network")
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else if let Err(error) = show_popup(&window, rect) {
+                                eprintln!("Cannot show PAIN popup: {error}");
+                            }
                         }
                     }
-                    "quit" => app.exit(0),
-                    _ => {}
                 })
                 .build(app)?;
             Ok(())
@@ -424,6 +421,22 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+            }
+            if let tauri::WindowEvent::Focused(false) = event {
+                // Clicking the brain can blur the window before the click event.
+                // Let that click toggle it, rather than hiding then reopening it.
+                let over_tray = (|| -> Option<bool> {
+                    let rect = window.app_handle().tray_by_id("brain")?.rect().ok()??;
+                    let cursor = window.cursor_position().ok()?;
+                    let scale = window.scale_factor().ok()?;
+                    let position = rect.position.to_physical::<f64>(scale);
+                    let size = rect.size.to_physical::<f64>(scale);
+                    Some(cursor.x >= position.x && cursor.x < position.x + size.width
+                        && cursor.y >= position.y && cursor.y < position.y + size.height)
+                })().unwrap_or(false);
+                if !over_tray {
+                    let _ = window.hide();
+                }
             }
         })
         .run(tauri::generate_context!())

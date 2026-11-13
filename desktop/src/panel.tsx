@@ -23,7 +23,7 @@ export type Model = {
   id: string; title: string; downloaded: boolean; downloadable: boolean;
   bytes: number; received: number; selected: boolean; removable?: boolean; remove_blocked?: string;
 };
-export type Action = 'getting-started' | 'setup' | 'up' | 'down' | 'logs' | 'refresh' | 'download' | 'use' | 'fetch' | 'folder' | 'remove';
+export type Action = 'getting-started' | 'quit' | 'setup' | 'up' | 'down' | 'logs' | 'refresh' | 'download' | 'use' | 'fetch' | 'folder' | 'remove';
 export type LogsState = { state: 'idle' | 'loading' | 'ready' | 'error'; content: string; error: string };
 const initialLogs: LogsState = { state: 'idle', content: '', error: '' };
 type Act = (name: Action, value?: string) => void;
@@ -48,10 +48,11 @@ function Panel({ status, action, logs }: { status: Status; action: Act; logs: Lo
   const [folder, setFolder] = useState(status.modelsDir || '');
   const [cursor, setCursor] = useState<Cursor | null>(null);
   const root = useRef<HTMLElement>(null);
+  const content = useRef<HTMLDivElement>(null);
   const urlForm = useRef<HTMLFormElement>(null), folderForm = useRef<HTMLFormElement>(null);
   const state = panelState(status, { platform: 'mac' });
   useEffect(() => setFolder(status.modelsDir || ''), [status.modelsDir]);
-  useEffect(() => { window.scrollTo(0, 0); setCursor(null); }, [screen]);
+  useEffect(() => { content.current?.scrollTo(0, 0); setCursor(null); }, [screen]);
   useEffect(() => { root.current?.querySelector('[data-cursor="true"]')?.scrollIntoView({ block: 'nearest' }); }, [cursor]);
   useEffect(() => {
     if (removeId && !status.models?.some(model => model.id === removeId)) setRemoveId('');
@@ -116,7 +117,10 @@ function Panel({ status, action, logs }: { status: Status; action: Act; logs: Lo
 
   return <section ref={root} className="panel" tabIndex={-1} aria-label="PAIN" onKeyDown={handleKey}>
     <Surface as="header" layer="float" className="app-toolbar">
-      <Tree tree={heroView(status)} />
+      <div className="app-heading">
+        <Tree tree={heroView(status)} />
+        <Button label="Quit" title="Quit PAIN; inference keeps running" size="md" variant="quiet" onPress={() => action('quit')} />
+      </div>
       <div className="toolbar-navigation" data-cursor={cursor?.row === 1}>
         <Tabs name="PAIN" items={tabs} value={screen} panelId="pain-tab-panel" onChange={navigate} />
         <Button label="Getting Started" size="md" variant="quiet" onPress={() => action('getting-started')} />
@@ -131,7 +135,7 @@ function Panel({ status, action, logs }: { status: Status; action: Act; logs: Lo
       </Group>
     </Surface>
 
-    <div id="pain-tab-panel" role="tabpanel" aria-labelledby={`tabs-pain-${screen}`} tabIndex={0} className="tab-content">
+    <div ref={content} id="pain-tab-panel" role="tabpanel" aria-labelledby={`tabs-pain-${screen}`} tabIndex={0} className="tab-content">
       {screen === 'models' ? <div className="models-content">
         <Surface layer="raised" className="model-manager"><div role={status.error ? 'alert' : undefined}><Preview tree={managerTree} dispatch={dispatch} width={460} theme={managerTheme} /></div></Surface>
         <Surface layer="raised" className="manager-form"><Group name="Add a model by URL" direction="column" gap={3}>

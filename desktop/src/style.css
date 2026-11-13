@@ -3,14 +3,16 @@
 /* Match visual[flow]'s native page frame: ThemeScope's bleed removes padding,
    but its default surface tint must also yield to the macOS HUD background. */
 html, body, #app, #app > .lib-scope { margin: 0; background: transparent; }
+html, body, #app { height: 100%; overflow: hidden; }
+#app > .lib-scope { height: 100%; min-height: 0; }
 /* Zen's slim scrollbar recipe: a transparent track and an inset thumb. The
    page uses system ink; nested logs inherit their current frost-mode ink. */
-html, .engine-logs { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, currentColor 38%, transparent) transparent; }
-:is(html, .engine-logs)::-webkit-scrollbar { width: 8px; height: 8px; }
-:is(html, .engine-logs)::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: color-mix(in srgb, currentColor 38%, transparent); background-clip: padding-box; }
-:is(html, .engine-logs)::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, currentColor 60%, transparent); background-clip: padding-box; }
-:is(html, .engine-logs)::-webkit-scrollbar-track,
-:is(html, .engine-logs)::-webkit-scrollbar-corner { background: transparent; }
+.tab-content, .onboarding, .engine-logs { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, currentColor 38%, transparent) transparent; }
+:is(.tab-content, .onboarding, .engine-logs)::-webkit-scrollbar { width: 8px; height: 8px; }
+:is(.tab-content, .onboarding, .engine-logs)::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: color-mix(in srgb, currentColor 38%, transparent); background-clip: padding-box; }
+:is(.tab-content, .onboarding, .engine-logs)::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, currentColor 60%, transparent); background-clip: padding-box; }
+:is(.tab-content, .onboarding, .engine-logs)::-webkit-scrollbar-track,
+:is(.tab-content, .onboarding, .engine-logs)::-webkit-scrollbar-corner { background: transparent; }
 .pain-window {
   /* visual[flow]'s scope supplies the materials and palette. These aliases
      retain the shared panel's readout roles without introducing a second skin. */
@@ -29,9 +31,13 @@ html, .engine-logs { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, 
   font-variant-numeric: tabular-nums;
   line-height: 1.4;
   border-radius: 0;
+  height: 100%;
 }
-.panel { max-width: 460px; min-height: 100vh; margin: auto; outline: none; }
-.app-toolbar { position: sticky; top: 0; z-index: 20; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-radius: 0; }
+.panel { display: flex; flex-direction: column; max-width: 460px; height: 100dvh; min-height: 0; margin: auto; outline: none; overflow: hidden; }
+.app-toolbar { position: relative; z-index: 1; flex: 0 0 auto; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-radius: 0; }
+.app-heading { display: flex; align-items: center; gap: var(--space-3); }
+.app-heading .panel-hero { flex: 1; min-width: 0; }
+.app-heading > .yh-button { padding-inline: var(--space-2); }
 .toolbar-navigation { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .toolbar-navigation > .lib-tabs {
   /* Zen's segmented track and filled selected face, using the frost tokens. */
@@ -53,7 +59,7 @@ html, .engine-logs { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, 
 .toolbar-action .yh-button { min-width: 0; }
 .toolbar-action[data-cursor="true"] .yh-button { outline: 1px solid var(--focus-ring); outline-offset: 2px; }
 .toolbar-action .glyph { width: 14px; height: 14px; }
-.tab-content { outline: none; scroll-margin-top: 190px; }
+.tab-content { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; outline: none; }
 .tab-content:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .dashboard, .models-content, .logs-content { display: flex; flex-direction: column; gap: var(--space-5); padding: var(--space-5); }
 .telemetry-section, .model-manager, .manager-form, .logs-section { padding: var(--space-4); border-radius: var(--radius-card); }
@@ -121,7 +127,7 @@ html, .engine-logs { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, 
 .engine-logs { white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.6; padding: var(--space-3); border-radius: var(--radius-input); background: var(--mat-well-fill); color: var(--text-1); overflow: auto; min-width: 0; margin: 0; }
 .engine-logs:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .getting-started { display: block; margin: var(--space-4) auto 0; }
-.onboarding { max-width: 680px; min-height: 100vh; margin: auto; padding: 28px; }
+.onboarding { max-width: 680px; height: 100dvh; margin: auto; padding: 28px; overflow: auto; }
 .onboarding header { display: flex; align-items: center; gap: var(--space-3); }
 .eyebrow { font-size: 11px; letter-spacing: .06em; color: var(--text-3); }
 .mark { font-size: 33px; color: var(--accent); }

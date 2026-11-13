@@ -1,5 +1,5 @@
 import { component, each, h, iconNode, type ChildArg, type ComponentNode, type Node } from '@satoramoto/zen/view';
-import { clamp01, panelState } from '../../.build/pain-ui/model.mjs';
+import { clamp01, known, panelState } from '../../.build/pain-ui/model.mjs';
 import type { Status } from './panel';
 
 export interface Cursor { row: number; index: number }
@@ -51,25 +51,32 @@ export function dashboardView(status: Status): Node {
   const data = state.inference, memory = state.memory, hardware = state.hardware;
   const colors = ['var(--accent)', 'var(--draft)', 'var(--kv)', 'var(--system)'];
   const host = status.telemetry_scope === 'macos-host' ? 'macOS host' : '';
+  const modelName = status.models?.find(model => model.id === status.model_alias)?.title || data.model;
+  const hasRam = memory.available && typeof status.memory === 'object' && status.memory !== null && known(status.memory.used_gib);
+  const hasSwap = memory.swap !== 'Unavailable';
+  const compute = [
+    hardware.cpu !== 'Unavailable' ? meter('CPU', hardware.cpu, hardware.cpuFraction) : null,
+    hardware.gpu !== 'Unavailable' ? meter('GPU', hardware.gpu, hardware.gpuFraction, hardware.gpuFraction >= .8 ? 'accent' : 'normal') : null,
+    hardware.power !== 'Unavailable' ? meter('Power', hardware.power, hardware.powerFraction) : null,
+    hardware.thermals !== 'Unavailable' ? pair('Thermals', hardware.thermals) : null,
+  ].filter((node): node is Node => node !== null);
   return h('div', { class: 'dashboard' },
     state.online ? section('Inference', state.generating ? 'Generating' : 'Ready',
-      h('div', { class: 'info-rows' }, pair('Model', data.model), pair('Prompt', data.prompt), pair('Draft', data.draft), pair('Speed', data.speed)),
+      h('div', { class: 'info-rows' }, pair('Model', modelName), pair('Prompt', data.prompt), pair('Draft', data.draft), pair('Speed', data.speed)),
       meter('Context', data.context, data.fraction, 'normal', state.generating)) : null,
 
-    section('Memory', host,
-      h('div', { class: 'ram-reading' }, pair('RAM', memory.ram),
+    hasRam || memory.gttAvailable || hasSwap ? section('Memory', host,
+      hasRam ? h('div', { class: 'ram-reading' }, pair('RAM', memory.ram),
         h('div', { class: 'stacked-meter', 'aria-label': `RAM ${memory.ram}` },
           h('div', { class: 'stacked-track' }, each(memory.segments, segment => segment.key, (segment, index) => h('span', { style: `width:${memory.total > 0 ? clamp01(segment.value / memory.total) * 100 : 0}%;background:${colors[index]}` }))),
           memory.gttCap > 0 && memory.gttCap < 1 ? h('i', { class: 'gtt-marker', style: `left:${memory.gttCap * 100}%`, title: memory.gttCaption }) : null),
         memory.segments.length > 0 ? h('div', { class: 'memory-legend' },
           memory.segments.map((segment, index) => segment.value > 0 || segment.key === 'sys' ? h('span', {}, h('i', { style: `background:${colors[index]}` }), `${segment.label} ${segment.value.toFixed(1)}`) : null),
-          memory.gttCap > 0 ? h('span', {}, h('i', { class: 'legend-tick' }), memory.gttCaption) : null) : null),
-      memory.gttAvailable ? meter('GTT', memory.gtt, memory.gttRatio, memory.gttRatio >= .9 ? 'urgent' : 'normal') : pair('GPU allocation', 'Not reported'), pair('Swap', memory.swap)),
+          memory.gttCap > 0 ? h('span', {}, h('i', { class: 'legend-tick' }), memory.gttCaption) : null) : null) : null,
+      memory.gttAvailable ? meter('GTT', memory.gtt, memory.gttRatio, memory.gttRatio >= .9 ? 'urgent' : 'normal') : null,
+      hasSwap ? pair('Swap', memory.swap) : null) : null,
 
-    section('Compute', host,
-      meter('CPU', hardware.cpu, hardware.cpuFraction),
-      meter('GPU', hardware.gpu, hardware.gpuFraction, hardware.gpuFraction >= .8 ? 'accent' : 'normal'),
-      hardware.power === 'Unavailable' ? pair('Power', hardware.power) : meter('Power', hardware.power, hardware.powerFraction), pair('Thermals', hardware.thermals)),
+    compute.length ? section('Compute', host, ...compute) : null,
 
     section('Engine', state.online ? 'Online' : 'Offline',
       h('div', { class: 'backend-chips' }, h('span', { class: 'backend-chip', title: 'Backend supplied by your selected container framework' }, status.backend || 'Not prepared')),
