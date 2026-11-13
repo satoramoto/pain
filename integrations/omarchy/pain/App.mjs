@@ -2,7 +2,6 @@
 import { element, column, row, text, button, control } from './.generated/application.mjs';
 import { panelState, known, clamp01 } from './.generated/model.mjs';
 import { view as modelManager, guide } from './Panel.mjs';
-import { themes } from './Appearance.mjs';
 import { tabs } from './AppState.mjs';
 
 const surface = (label, children, props = {}) => element('surface', Object.assign({ label }, props), children);
@@ -96,21 +95,22 @@ export function appView(status, ui, logs = { state: 'idle', content: '' }, capab
   const toolbar = surface('', [
     row([
       element('hero', { label: 'PAIN', detail: state.detail, meta: state.meta, icon: 'brain', grow: true, active: state.generating || state.busy }),
+      action('?', capabilities.guide ? 'guide' : 'getting-started', { variant: 'quiet', title: 'Getting Started', width:28 }),
       action('Quit', 'quit', { variant: 'quiet', title: 'Quit PAIN; inference keeps running' }),
     ]),
     row([
       element('tabs', { label: 'PAIN', options: tabs.map(tab => ({ label: tab.label, value: tab.id })), value: ui.screen === 'guide' ? 'dashboard' : ui.screen, action: 'navigate', grow: true }),
-      action('Getting Started', capabilities.guide ? 'guide' : 'getting-started', { variant: 'quiet' }),
     ]),
-    control('select', 'Theme', ui.theme || 'platform', 'select-theme', {options:themes}),
-    capabilities.backendSelection ? control('select', 'Engine backend', ui.backend || status.backend, 'select-backend', { options: (status.backends || []).map(value => ({ label: value, value })), disabled: !!status.busy }) : null,
-    row(state.actions.map(item => action(item.label, item.key, {
+    row(state.actions.map(item => element(item.key === 'up' && capabilities.backendSelection ? 'split-button' : 'button', {
+      label:item.label, action:item.key, icon:item.key,
+      selectionLabel:'Engine backend', selectionAction:'select-backend', selectionDisabled:!!status.busy,
+      value:ui.backend || status.backend, options:(status.backends || []).map(value=>({label:value,value})),
       disabled: item.key !== 'logs' && !item.enabled,
       variant: item.key === 'up' ? 'primary' : 'secondary',
-      tone: item.key === 'down' ? 'danger' : 'normal', title: item.tip, grow: true,
-    })).concat([action('Refresh', 'refresh', { disabled: !!status.busy, grow: true })])),
-    status.error ? text(status.error, { tone: 'danger', role: 'alert' }) : ui.screen === 'dashboard'
-      ? text((state.online ? 'Restart interrupts requests. ' : '') + 'S start · D stop · G logs · R refresh', { tone: 'muted' }) : null,
+      tone: item.key === 'down' ? 'danger' : 'normal', title: item.tip,
+      grow: !(item.key === 'up' && capabilities.backendSelection), width:item.key === 'up' && capabilities.backendSelection ? 128 : undefined,
+    })).concat([action('Refresh', 'refresh', { icon:'', disabled: !!status.busy, grow: true })])),
+    status.error ? text(status.error, { tone: 'danger', role: 'alert' }) : null,
   ].filter(Boolean), { layer: 'float', key: 'toolbar' });
   const content = ui.screen === 'guide' ? surface('', [guide(status, ui)]) : ui.screen === 'models' ? models(status, ui)
     : ui.screen === 'logs' ? logView(logs) : dashboard(status, state);

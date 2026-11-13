@@ -53,7 +53,6 @@ export function guide(status, ui = {}) {
     section('1 · Choose a backend', [text('Use the Engine backend selector. Start applies the selected backend; Restart replaces the running engine.')]),
     section('2 · Choose a model', [text('Open Models to download a supported model, resume a partial download, or use a model already on disk.'), row([actionButton(ui, 'Models', 'models')])]),
     section('3 · Start local inference', [text('Return to the dashboard and press Start. Inference, memory, and hardware readings update while the panel is open.')]),
-    section('Keyboard', [text('Tab moves between controls. Enter activates. S start · D stop · G logs · R refresh. Escape returns to the dashboard.')]),
     text('Removal requires a stopped engine and a separate confirmation in Models.', { tone: 'muted' }),
   ]);
 }

@@ -1,4 +1,3 @@
-import { appearanceFor } from '../../integrations/omarchy/pain/Appearance.mjs';
 import type { ReactNode } from 'react';
 import { Surface, ThemeScope } from './zen';
 
@@ -22,13 +21,8 @@ const facets = {
   },
 };
 
-export function ThemeFrame({ children, appearance }: { children: ReactNode; appearance?: string }) {
-  let selected = appearance;
-  if (!selected) {
-    try { selected = appearanceFor(localStorage.getItem('pain.appearance'), 'mac'); } catch { selected = 'visuals'; }
-  }
-  const chosen = resolveApplicationTheme(selected || 'visuals');
-  return <ThemeScope facets={selected === 'visuals' ? facets : chosen.facets} principles={chosen.pack.principles} mode="system" bleed>
+export function ThemeFrame({ children }: { children: ReactNode }) {
+  return <ThemeScope facets={facets} principles={visuals.pack.principles} mode="system" bleed>
     <Surface layer="ground" className="pain-window">{children}</Surface>
   </ThemeScope>;
 }
