@@ -1,6 +1,5 @@
 // Portable application state. Both hosts dispatch named actions through this
 // reducer; only returned effects may cross into platform services.
-import { validTheme } from './Appearance.mjs';
 import { removalReason, panelState } from './.generated/model.mjs';
 
 export const tabs = [
@@ -10,7 +9,7 @@ export const tabs = [
 ];
 
 export function initialState(status = {}) {
-  return { screen: 'dashboard', theme: 'platform', removeId: '', url: '', folder: status.modelsDir || '', cursor: null, backend: status.backend || '' };
+  return { screen: 'dashboard', removeId: '', url: '', folder: status.modelsDir || '', cursor: null, backend: status.backend || '' };
 }
 
 export function transition(current, status, action, payload, logs = { state: 'idle' }) {
@@ -28,7 +27,6 @@ export function transition(current, status, action, payload, logs = { state: 'id
   if (action === 'navigate' && tabs.some(tab => tab.id === id)) navigate(id, false);
   else if (['guide', 'dashboard', 'models'].includes(action)) navigate(action, false);
   else if (action === 'logs') navigate('logs', true);
-  else if (action === 'select-theme' && validTheme(id)) state.theme = id;
   else if (action === 'select-backend' && (status.backends || []).includes(id)) state.backend = id;
   else if (action === 'edit-url') state.url = id;
   else if (action === 'edit-folder') state.folder = id;
@@ -59,7 +57,5 @@ export function transition(current, status, action, payload, logs = { state: 'id
 
 export function keyAction(state, key) {
   if (key === 'Escape') return 'escape';
-  if (key.toLowerCase() === 'g') return 'logs';
-  if (state.screen !== 'dashboard') return '';
-  return ({ s: 'up', d: 'down', r: 'refresh' })[key.toLowerCase()] || '';
+  return '';
 }

@@ -24,7 +24,7 @@ def main():
     ):
         target = work / name
         if not target.exists(): target.symlink_to(source_path, target_is_directory=source_path.is_dir())
-    for name in ('App.mjs', 'AppState.mjs', 'Appearance.mjs'):
+    for name in ('App.mjs', 'AppState.mjs'):
         target = work / name
         if not target.exists(): target.symlink_to(ROOT / 'integrations/omarchy/pain' / name)
     fixtures = json.loads((ROOT / 'desktop/public/fixtures.json').read_text())
@@ -42,7 +42,7 @@ Window {
     property var status: STATUS
     Zen.ApplicationTheme { id:theme; name:THEME }
     Rectangle { id:capture; anchors.fill:parent; color:"#171b1a"
-        Zen.Application { anchors.fill:parent; theme:theme.snapshot; tree:View.appView(status,State.initialState(status)) }
+        Zen.Application { anchors.fill:parent; theme:theme.snapshot; tree:View.appView(status,State.initialState(status),undefined,{backendSelection:true,guide:true}) }
     }
     Timer { interval:1200; running:true; onTriggered:capture.grabToImage(function(result) { if(!result.saveToFile(OUTPUT)) Qt.exit(2); else Qt.quit() }) }
 }

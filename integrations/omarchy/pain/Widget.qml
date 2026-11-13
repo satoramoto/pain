@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtCore
 import Quickshell
 import Quickshell.Io
 import qs.Ui
@@ -8,7 +7,6 @@ import qs.Commons as Commons
 import "Model.js" as Model
 import "App.mjs" as View
 import "AppState.mjs" as State
-import "Appearance.mjs" as Appearance
 import ".generated" as Zen
 
 // Native host only: window, IPC, telemetry polling and action execution.
@@ -17,12 +15,7 @@ Panel {
   moduleName: "local.pain"
   ipcTarget: "local.pain"
   manageIpc: false
-  Settings {
-    id:preferences
-    location:"file://"+(Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME")+"/.local/state")+"/pain/ui.ini"
-    property string appearance:"platform"
-  }
-  Zen.ApplicationTheme { id:applicationTheme; name:Appearance.appearanceFor(root.ui.theme,"linux") }
+  Zen.ApplicationTheme { id:applicationTheme; name:"omarchy" }
   property var status: ({})
   property var ui: State.initialState()
   property var logs: ({state:"idle",content:"",error:""})
@@ -45,7 +38,6 @@ Panel {
   function dispatch(action,payload,value) {
     var next=State.transition(ui,viewStatus,action,value===undefined?payload:value,logs)
     ui=next.state
-    if(action==="select-theme") preferences.appearance=ui.theme
     for(var effect of next.effects) {
       if(effect.action === "refresh") refresh()
       else if(effect.action === "close" || effect.action === "quit") close()
@@ -76,7 +68,7 @@ Panel {
   }
   implicitWidth:button.implicitWidth
   implicitHeight:button.implicitHeight
-  Component.onCompleted:{ ui=Object.assign({},ui,{theme:Appearance.validTheme(preferences.appearance)?preferences.appearance:"platform"}); refresh() }
+  Component.onCompleted:refresh()
   onOpenedChanged:if(opened) { refresh(); Qt.callLater(()=>application.forceActiveFocus()) }
   // Poll slowly for the bar glyph while closed; the open panel tracks the slot.
   Timer {

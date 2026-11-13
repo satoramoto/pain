@@ -42,8 +42,9 @@ try {
   }
   await page.setViewportSize({width:460,height:720});
   await page.goto(`${origin}/iframe.html?id=tray-tauri--offline&viewMode=story`);
-  for (const appearance of ['omarchy','visuals']) {
-    await page.getByRole('combobox',{name:'Theme'}).selectOption(appearance);
+  for (const appearance of ['visuals']) {
+    await expect(page.getByRole('combobox',{name:'Theme'})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'?'})).toBeVisible();
     await expect(page.locator('.zen-application')).toHaveAttribute('data-appearance',appearance);
     const start=page.getByRole('button',{name:'Start',exact:true});
     await start.hover();
@@ -58,6 +59,5 @@ try {
     }
     console.log(`PASS ${appearance} selection, focus, disabled state and narrow layout`);
   }
-  await page.getByRole('combobox',{name:'Theme'}).selectOption('platform');
   if(errors.length) throw new Error(errors.join('\n'));
 } finally {await browser.close();}

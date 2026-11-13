@@ -1,6 +1,5 @@
 export interface AppState {
   screen: 'dashboard' | 'models' | 'logs' | 'guide';
-  theme: string;
   removeId: string;
   url: string;
   backend: string;
