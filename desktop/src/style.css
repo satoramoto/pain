@@ -97,8 +97,6 @@ html, body, #app { height: 100%; overflow: hidden; }
 .memory-legend > span { display: inline-flex; align-items: center; gap: var(--space-1); }
 .memory-legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .memory-legend .legend-tick { width: 2px; height: 10px; border-radius: 0; background: var(--accent); }
-.backend-chips { display: flex; gap: var(--space-2); flex-wrap: wrap; }
-.backend-chip { padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--mat-well-fill); font-size: var(--size-caption); }
 .control-caption { color: var(--text-3); margin: 0; font-size: var(--size-caption); line-height: 1.5; overflow-wrap: anywhere; }
 .control-error { color: var(--danger); white-space: pre-wrap; }
 .panel .om-desktop { padding: 0; min-height: 0; background: transparent; }

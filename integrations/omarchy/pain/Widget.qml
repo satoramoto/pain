@@ -384,6 +384,81 @@ Panel {
             }
           }
 
+          // ---------- Engine controls ----------
+          Column {
+            width: parent.width
+            spacing: Style.space(10)
+
+            PanelSectionHeader {
+              text: "BACKEND"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            ButtonGroup {
+              width: parent.width
+              options: root.backends
+              value: root.selectedBackend
+              foreground: root.foreground
+              background: Commons.Color.background
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              focusable: false
+              cursorIndex: root.cursorActive && root.focusSection === "backend" ? root.backendIndex() : -1
+              onChanged: function(value) { root.selectedBackend = value }
+              onHovered: function(index, isHovered) {
+                if (isHovered) { root.cursorActive = true; root.focusSection = "backend" }
+              }
+            }
+
+            Row {
+              id: actionRow
+              width: parent.width
+              spacing: Style.space(6)
+              readonly property real cellWidth: (width - spacing * (root.actions.length - 1)) / root.actions.length
+
+              Repeater {
+                model: root.actions
+                Button {
+                  required property var modelData
+                  required property int index
+                  width: actionRow.cellWidth
+                  iconText: modelData.icon
+                  iconSize: Style.font.title
+                  text: modelData.label
+                  tooltipText: modelData.tip
+                  fontSize: Style.font.bodySmall
+                  foreground: modelData.key === "down" && root.online ? root.urgent : root.foreground
+                  fontFamily: root.fontFamily
+                  verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
+                  bordered: true
+                  enabled: modelData.enabled
+                  opacity: enabled ? 1 : 0.45
+                  hasCursor: root.cursorActive && root.focusSection === "actions" && root.actionIndex === index
+                  onClicked: root.runAction(modelData.key)
+                  onHovered: function(h) {
+                    if (h) { root.cursorActive = true; root.focusSection = "actions"; root.actionIndex = index }
+                  }
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.controlError.length ? root.controlError
+                : (root.online ? "Restart replaces the running engine and interrupts requests. " : "")
+                  + "S start · D stop · M monitor · G logs · R refresh"
+              color: root.controlError.length ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          PanelSeparator { foreground: root.foreground }
+
           // ---------- Inference ----------
           Column {
             width: parent.width
@@ -512,81 +587,6 @@ Panel {
             }
 
             InfoPair { label: "Thermals"; value: Model.tempsText(root.hw) }
-          }
-
-          PanelSeparator { foreground: root.foreground }
-
-          // ---------- Engine controls ----------
-          Column {
-            width: parent.width
-            spacing: Style.space(10)
-
-            PanelSectionHeader {
-              text: "BACKEND"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            ButtonGroup {
-              width: parent.width
-              options: root.backends
-              value: root.selectedBackend
-              foreground: root.foreground
-              background: Commons.Color.background
-              accent: root.accent
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              focusable: false
-              cursorIndex: root.cursorActive && root.focusSection === "backend" ? root.backendIndex() : -1
-              onChanged: function(value) { root.selectedBackend = value }
-              onHovered: function(index, isHovered) {
-                if (isHovered) { root.cursorActive = true; root.focusSection = "backend" }
-              }
-            }
-
-            Row {
-              id: actionRow
-              width: parent.width
-              spacing: Style.space(6)
-              readonly property real cellWidth: (width - spacing * (root.actions.length - 1)) / root.actions.length
-
-              Repeater {
-                model: root.actions
-                Button {
-                  required property var modelData
-                  required property int index
-                  width: actionRow.cellWidth
-                  iconText: modelData.icon
-                  iconSize: Style.font.title
-                  text: modelData.label
-                  tooltipText: modelData.tip
-                  fontSize: Style.font.bodySmall
-                  foreground: modelData.key === "down" && root.online ? root.urgent : root.foreground
-                  fontFamily: root.fontFamily
-                  verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
-                  bordered: true
-                  enabled: modelData.enabled
-                  opacity: enabled ? 1 : 0.45
-                  hasCursor: root.cursorActive && root.focusSection === "actions" && root.actionIndex === index
-                  onClicked: root.runAction(modelData.key)
-                  onHovered: function(h) {
-                    if (h) { root.cursorActive = true; root.focusSection = "actions"; root.actionIndex = index }
-                  }
-                }
-              }
-            }
-
-            Text {
-              width: parent.width
-              textFormat: Text.PlainText
-              text: root.controlError.length ? root.controlError
-                : (root.online ? "Restart replaces the running engine and interrupts requests. " : "")
-                  + "S start · D stop · M monitor · G logs · R refresh"
-              color: root.controlError.length ? root.urgent : root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
           }
 
           Row {

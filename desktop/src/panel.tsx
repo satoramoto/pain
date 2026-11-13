@@ -133,6 +133,8 @@ function Panel({ status, action, logs }: { status: Status; action: Act; logs: Lo
           <Button label="Refresh" title="Refresh status (R)" size="cell" variant="secondary" disabled={disabled} icon={<Tree tree={glyph('refresh')} />} onPress={() => action('refresh')} />
         </span>
       </Group>
+      {status.error ? <p className="control-caption control-error" role="alert">{status.error}</p>
+        : screen === 'dashboard' ? <p className="control-caption">{state.online ? 'Restart interrupts requests. ' : ''}S start · D stop · G logs · R refresh</p> : null}
     </Surface>
 
     <div ref={content} id="pain-tab-panel" role="tabpanel" aria-labelledby={`tabs-pain-${screen}`} tabIndex={0} className="tab-content">

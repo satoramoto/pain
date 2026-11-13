@@ -53,7 +53,6 @@ export function dashboardView(status: Status): Node {
   const host = status.telemetry_scope === 'macos-host' ? 'macOS host' : '';
   const modelName = status.models?.find(model => model.id === status.model_alias)?.title || data.model;
   const hasRam = memory.available && typeof status.memory === 'object' && status.memory !== null && known(status.memory.used_gib);
-  const hasSwap = memory.swap !== 'Unavailable';
   const compute = [
     hardware.cpu !== 'Unavailable' ? meter('CPU', hardware.cpu, hardware.cpuFraction) : null,
     hardware.gpu !== 'Unavailable' ? meter('GPU', hardware.gpu, hardware.gpuFraction, hardware.gpuFraction >= .8 ? 'accent' : 'normal') : null,
@@ -65,7 +64,7 @@ export function dashboardView(status: Status): Node {
       h('div', { class: 'info-rows' }, pair('Model', modelName), pair('Prompt', data.prompt), pair('Draft', data.draft), pair('Speed', data.speed)),
       meter('Context', data.context, data.fraction, 'normal', state.generating)) : null,
 
-    hasRam || memory.gttAvailable || hasSwap ? section('Memory', host,
+    hasRam || memory.gttAvailable ? section('Memory', host,
       hasRam ? h('div', { class: 'ram-reading' }, pair('RAM', memory.ram),
         h('div', { class: 'stacked-meter', 'aria-label': `RAM ${memory.ram}` },
           h('div', { class: 'stacked-track' }, each(memory.segments, segment => segment.key, (segment, index) => h('span', { style: `width:${memory.total > 0 ? clamp01(segment.value / memory.total) * 100 : 0}%;background:${colors[index]}` }))),
@@ -73,14 +72,8 @@ export function dashboardView(status: Status): Node {
         memory.segments.length > 0 ? h('div', { class: 'memory-legend' },
           memory.segments.map((segment, index) => segment.value > 0 || segment.key === 'sys' ? h('span', {}, h('i', { style: `background:${colors[index]}` }), `${segment.label} ${segment.value.toFixed(1)}`) : null),
           memory.gttCap > 0 ? h('span', {}, h('i', { class: 'legend-tick' }), memory.gttCaption) : null) : null) : null,
-      memory.gttAvailable ? meter('GTT', memory.gtt, memory.gttRatio, memory.gttRatio >= .9 ? 'urgent' : 'normal') : null,
-      hasSwap ? pair('Swap', memory.swap) : null) : null,
+      memory.gttAvailable ? meter('GTT', memory.gtt, memory.gttRatio, memory.gttRatio >= .9 ? 'urgent' : 'normal') : null) : null,
 
     compute.length ? section('Compute', host, ...compute) : null,
-
-    section('Engine', state.online ? 'Online' : 'Offline',
-      h('div', { class: 'backend-chips' }, h('span', { class: 'backend-chip', title: 'Backend supplied by your selected container framework' }, status.backend || 'Not prepared')),
-      status.error ? h('p', { class: 'control-caption control-error', role: 'alert' }, status.error)
-        : h('p', { class: 'control-caption' }, `${state.online ? 'Restart replaces the running engine and interrupts requests. ' : ''}S start · D stop · G logs · R refresh`)),
   );
 }
