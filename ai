@@ -9,6 +9,7 @@ import hashlib
 import itertools
 import json
 import os
+import shlex
 import shutil
 from pathlib import Path
 import socket
@@ -539,6 +540,62 @@ def generate_models_ini():
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     print(f'[pain(less)] Generated router presets: {ini_path}', flush=True)
+
+
+LOOPBACK = ('127.0.0.1', 'localhost', '::1')
+
+
+def serve_command(model=None):
+    """(argv, env) for llama-server when this container is itself the engine.
+
+    `ai up` asks a container runtime for an engine; `ai serve` is for the inside of
+    one (a rented GPU, a CI job), where there is no runtime to ask. It fetches what
+    the model needs, then hands the process over to llama-server.
+    """
+    cfg = config()
+    binary = cfg.get('PAIN_ENGINE_BIN') or shutil.which('llama-server') or '/app/llama-server'
+    if not os.access(binary, os.X_OK):
+        raise ValueError(f'No llama-server at {binary}. Set PAIN_ENGINE_BIN.')
+    host = cfg.get('PAIN_HOST', '127.0.0.1')
+    key = cfg.get('PAIN_API_KEY') or cfg.get('LLAMA_API_KEY')
+    if host not in LOOPBACK and not key:
+        raise ValueError(f'Refusing to serve on {host} without PAIN_API_KEY: '
+                         'anyone who can reach the port could use the engine.')
+    model = model or cfg.get('PAIN_MODEL')
+    available = presets()
+    with model_operation():
+        if model and model not in available:
+            target = pull(model)
+            chosen = ['-m', str(target), '--alias', target.stem,
+                      '-c', cfg.get('PAIN_CONTEXT_LENGTH', '32768')]
+        else:
+            # Presets name their weights by the /models path the engine containers mount.
+            if models_dir() != Path('/models'):
+                raise ValueError('ai serve reads presets at /models. Set PAIN_MODELS_DIR=/models, '
+                                 'or name a GGUF source instead of a preset.')
+            if model:
+                if preset_downloads(available[model]):
+                    pull_preset(model)
+                if not preset_ready(available[model]):
+                    raise ValueError(f'{model} has no weights in {models_dir()} and no download.')
+            elif not any(preset_ready(path) and preset_files(path) for path in available.values()):
+                raise ValueError('Nothing to serve. Name a preset or a GGUF source, or set PAIN_MODEL.')
+            generate_models_ini()
+            chosen = ['--models-preset', '/models/models.ini', '--models-max', '1', '--models-autoload']
+    argv = [binary, *chosen, '-ngl', cfg.get('PAIN_GPU_LAYERS', '999'), '--flash-attn', 'on',
+            '--host', host, '--port', cfg.get('PAIN_PORT', '11434'),
+            *shlex.split(cfg.get('PAIN_ENGINE_ARGS', ''))]
+    env = dict(os.environ)
+    if key:
+        # In the environment, not argv: a process list shows arguments.
+        env['LLAMA_API_KEY'] = key
+    return argv, env
+
+
+def serve(model=None):
+    argv, env = serve_command(model)
+    print(f'[pain(less)] Serving: {" ".join(argv)}', flush=True)
+    os.execve(argv[0], argv, env)
 
 
 def sync_opencode():
@@ -1162,6 +1219,9 @@ def main():
     p.add_argument('--name', help='Output filename (default: derived from the source)')
     p.add_argument('--sha256', help='Expected SHA-256 for file downloads')
     p.add_argument('--force', action='store_true', help='Replace an existing file')
+    p = sub.add_parser('serve', help='Inside an engine container: fetch a model, then run llama-server')
+    p.add_argument('model', nargs='?',
+                   help='A preset, or a GGUF source as for pull (default: PAIN_MODEL)')
     p = sub.add_parser('apply', help='Create a named model from a checked-in preset')
     p.add_argument('preset', choices=list(presets()))
     p = sub.add_parser('run', help='Chat with a model')
@@ -1264,6 +1324,8 @@ def execute(args):
         pull_preset(args.source)
     elif args.command == 'pull':
         pull(args.source, name=args.name, sha256=args.sha256, force=args.force)
+    elif args.command == 'serve':
+        serve(args.model)
     elif args.command == 'run':
         require_llm(args.command)
         container()
