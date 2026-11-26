@@ -88,6 +88,25 @@ The Mac QA workflow packages a Tauri tray app with private APIR/Metal libraries.
 It is ready for hardware QA, not yet a validated Mac release. See `desktop/`
 for Storybook stories for the web tray and native Omarchy panel captures.
 
+### The engine as one image (NVIDIA)
+
+`ai up` asks Docker or Podman for an engine. Where there is no runtime to ask
+(a rented GPU, a CI job), `containers/engine-cuda/Dockerfile` builds llama.cpp's
+CUDA server with this launcher inside, and `ai serve` is its entrypoint: it
+fetches the model, then becomes llama-server.
+
+```sh
+docker build -f containers/engine-cuda/Dockerfile -t pain-engine-cuda .
+docker run --gpus all -p 11434:11434 -v ~/Models:/models \
+  -e PAIN_API_KEY -e PAIN_MODEL=owner/repo:file.gguf pain-engine-cuda
+```
+
+`PAIN_MODEL` is a preset or any source `ai pull` takes. The image listens beyond
+localhost, so it refuses to start without `PAIN_API_KEY`; clients send it as a
+bearer token. `PAIN_ENGINE_ARGS` adds llama-server options, `PAIN_CONTEXT_LENGTH`
+sets the window for a model that is not a preset, and `HF_TOKEN` reaches gated
+repositories. This image has not yet been run on a GPU.
+
 ## Daily commands
 
 ```sh
